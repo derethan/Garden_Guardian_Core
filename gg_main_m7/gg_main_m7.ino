@@ -36,7 +36,7 @@ const char* serverAddress = "192.168.0.150";
 const int serverPort = 3000;
 const char* serverRoute = "/sensors/store";
 const char* serverRouteGet = "/sensors/retrieve";
-const char serverTest = "/sensors/testconnection";
+const char* serverTest = "/sensors/testconnection";
 
 
 
@@ -398,7 +398,7 @@ void printWifiStatus() {
         - Handles HTTP Requests (GET, POST)
 *****************************************/
 
-void makeGetRequest(char serverRoute) {
+void makeGetRequest(const char* serverRoute) {
   WiFiClient wifiClient;
   HttpClient client(wifiClient, serverAddress, serverPort);
 
