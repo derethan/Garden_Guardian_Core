@@ -44,9 +44,14 @@ void bootScreen () {
 }
 
 // Function to display DHT sensor data
-void displayDHTData(float temperature, float humidity) {
+void displayDHTData(float temperature, float humidity, int currentPage, int lastPage) {
     // Clear the LCD
-    lcd.clear();
+
+    if (currentPage != lastPage){
+      lcd.clear();
+    }
+    
+
     // Display the data on the LCD
     lcd.setCursor(0, 0);
     lcd.write(byte(4));
@@ -65,9 +70,12 @@ void displayDHTData(float temperature, float humidity) {
 }
 
 // Function to display ambient temperature
-void displayAmbientTemp(float ambientTemp) {
-    // Clear the LCD
-    lcd.clear();
+void displayAmbientTemp(float ambientTemp, int currentPage, int lastPage) {
+
+    if (currentPage != lastPage){
+      lcd.clear();
+    }
+
     // Display ambient temperature data on the LCD
     lcd.setCursor(0, 0);
     lcd.write(byte(4));
@@ -86,12 +94,13 @@ void displayAmbientTemp(float ambientTemp) {
 
 
 // Function to display Heater Relay Screen
-void displayHeaterStatus(int RELAY_PIN, float temperature, float targetTemperature) {
+void displayHeaterStatus(int RELAY_PIN, float temperature, float targetTemperature, int currentPage, int lastPage) {
     // Read relay status
     int relayStatus = digitalRead(RELAY_PIN);
     
-    // Clear the LCD
-    lcd.clear();
+    if (currentPage != lastPage){
+      lcd.clear();
+    }
 
     // Display the Title on the LCD
     lcd.setCursor(0, 0);
@@ -118,10 +127,11 @@ void displayHeaterStatus(int RELAY_PIN, float temperature, float targetTemperatu
 }
 
 //Function to display the change Target Temperature Screen
-void displayTempChange (float targetTemperature){
+void displayTempChange (float targetTemperature, int currentPage, int lastPage){
 
-    // Clear the LCD
-    lcd.clear();
+    if (currentPage != lastPage){
+      lcd.clear();
+    }
 
     //Display the Tearget Temperature on the LCD
     lcd.setCursor(0, 0);
@@ -141,9 +151,12 @@ void displayTempChange (float targetTemperature){
 
 
 // Function to display water flow data
-void displayWaterFlow() {
-    // Clear the LCD
-    lcd.clear();
+void displayWaterFlow(int currentPage, int lastPage) {
+
+    if (currentPage != lastPage){
+      lcd.clear();
+    }
+    
     lcd.setCursor(0, 0);
     lcd.write(byte(4));
     lcd.setCursor(1, 0);

@@ -86,8 +86,11 @@ float targetTemperature = INITIAL_TEMP;
 
 // Define the current page variable and the number of pages
 int currentPage = 0;
+int lastPage = 0;
 int numPages = 4; // You have 4 pages - DHT, Relay, Ambient Temp, and Water Flow
-bool pageChangeDisabled = false;
+
+volatile bool pageChangeDisabled = false;
+bool lastSwitchState = LOW;
 
 //Encoder prositions
 volatile int encoderPos = 0;
@@ -95,13 +98,14 @@ volatile int lastEncoderPos = 0;
 
 //Track time for Sensor updates
 unsigned long previousMillis = 0;
-const long interval = 30000; //1000 per second
+const long interval = 60000; //1000 per second
 
 //Debug Messages
 char heaterStatus;
 
 
-
+// Define the variable to store the switch state
+bool switchState = false;
 /*****************************************
 *   SETUP FUNCTION
 *****************************************/
@@ -150,33 +154,58 @@ void loop() {
       debugInfo();
     }
 
+  // Read the switch state
+  switchState = digitalRead(ROTARY_BUTTON);
+
+// Check if the button is pressed
+  if (switchState == LOW && lastSwitchState == HIGH) {
+
+  switch (currentPage) {
+    case 1:
+            // Toggle the mode when the button is pressed
+            pageChangeDisabled = !pageChangeDisabled; // Switch between true and false
+          break;
+  }
+  
+    // Print a message to indicate the change
+    Serial.print("Button pressed, pageChangeDisabled is now ");
+    Serial.println(pageChangeDisabled ? "ON" : "OFF");
+  }
+
+  // Remember the current switch state for the next loop iteration
+  lastSwitchState = switchState;
 
 if (pageChangeDisabled == false) {
-    getEncoderPosition ();
 
+getEncoderPosition ();
 
     // Display the appropriate page data based on the current page
     switch (currentPage) {
         case 0:
-            displayDHTData(temperature1, humidity1);
+            displayDHTData(temperature1, humidity1, currentPage, lastPage);
+            lastPage = currentPage;
             break;
         case 1:
-            displayHeaterStatus(HEATER_RELAY_PIN, temperature1, targetTemperature);
+             displayHeaterStatus(HEATER_RELAY_PIN, temperature1, targetTemperature, currentPage, lastPage);
+             lastPage = currentPage;
             break;
         case 2:
-            displayAmbientTemp(ambientTemp);
+            displayAmbientTemp(ambientTemp, currentPage, lastPage);
+            lastPage = currentPage;
             break;
         case 3:
-            displayWaterFlow();
+            displayWaterFlow(currentPage, lastPage);
+            lastPage = currentPage;
             break;
     }
 } else {
+
       // Display the appropriate Button Press Page Data
       switch (currentPage) {
           case 0:
               break;
           case 1:
-              displayTempChange(targetTemperature);
+              displayTempChange(targetTemperature, currentPage, lastPage);
               break;
           case 2:
               break;
@@ -185,6 +214,7 @@ if (pageChangeDisabled == false) {
       }
     }
 
+delay (500);
 //getM4Message ();
 }
 
@@ -261,9 +291,10 @@ void initEncoder () {
   pinMode(ROTARY_PIN_B, INPUT_PULLUP);
   pinMode(ROTARY_BUTTON, INPUT_PULLUP);
 
+
   attachInterrupt(digitalPinToInterrupt(ROTARY_PIN_A), handleEncoder, CHANGE); //left
   attachInterrupt(digitalPinToInterrupt(ROTARY_PIN_B), handleEncoder, CHANGE); //right
-  attachInterrupt(digitalPinToInterrupt(ROTARY_BUTTON), handleButton, FALLING); //press
+
 }
 
 //Determine the current Position of the Encoder to track Pages
@@ -280,22 +311,6 @@ void  getEncoderPosition () {
     }
 }
 
-// Function to controll the rotary controler Button
-void handleButton() {
-  
-  switch (currentPage) {
-    case 1:
-            // Toggle the mode when the button is pressed
-            pageChangeDisabled = !pageChangeDisabled; // Switch between true and false
-
-            if (pageChangeDisabled == true) {
-              Serial.println("Temperature mode");
-            } else {
-              Serial.println("Normal mode");
-            }
-          break;
-  }
-}
 
 // Function to Controll the Rotary Controller Turns
 void handleEncoder() {
@@ -305,21 +320,34 @@ void handleEncoder() {
     int MSB = digitalRead(ROTARY_PIN_A);
     int LSB = digitalRead(ROTARY_PIN_B);
 
-  // Check if the encoder dial is turned in the temperature mode
-  if (pageChangeDisabled == true) {
-    // Check the direction of rotation
-    if (MSB != LSB) {
-      // Clockwise rotation
+  // // Check if the encoder dial is turned in the temperature mode
+  // if (pageChangeDisabled == true) {
+  //   // Check the direction of rotation
+  //   if (MSB != LSB) {
+  //     // Clockwise rotation
+  //     targetTemperature++; // Increase the target temperature by one degree
+  //   } else {
+  //     // Counter-clockwise rotation
+  //     targetTemperature--; // Decrease the target temperature by one degree
+  //   }
+  // }
+
+if (pageChangeDisabled == true) {
+
+    newEncoded = (MSB << 1) | LSB;
+    int sum = (lastEncoded << 2) | newEncoded;
+
+    if (sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011) {
       targetTemperature++; // Increase the target temperature by one degree
-    } else {
-      // Counter-clockwise rotation
+    } else if (sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) {
       targetTemperature--; // Decrease the target temperature by one degree
     }
-    // Print the target temperature
-    Serial.print("Target temperature: ");
-    Serial.println(targetTemperature);
 
-  } else {
+    lastEncoded = newEncoded;
+  }
+
+
+  if (pageChangeDisabled == false) {
 
     newEncoded = (MSB << 1) | LSB;
     int sum = (lastEncoded << 2) | newEncoded;
@@ -328,9 +356,9 @@ void handleEncoder() {
     } else if (sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) {
         encoderPos--;
     }
+
     lastEncoded = newEncoded;
   }
-
 
 }
 
