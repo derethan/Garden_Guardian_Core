@@ -9,9 +9,15 @@
 
 //Connections
 #include <DHT.h>
+//LCD Display
 #include <LiquidCrystal_I2C.h>
 LiquidCrystal_I2C lcd(0x27, 20, 4); // I2C address 0x27
+
+//Wire Inputs
 #include <Wire.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
 
 //Sensitive Data
 #include "arduino_secrets.h" 
@@ -32,8 +38,8 @@ char pass[] = SECRET_PASS;
 int status = WL_IDLE_STATUS;
 WiFiClient client;
 
-const char* serverAddress = "192.168.0.150";
-const int serverPort = 3000;
+const char* serverAddress = SECRET_API_SERVER;
+const int serverPort = SECRET_PORT;
 const char* serverRoute = "/sensors/store";
 const char* serverRouteGet = "/sensors/retrieve";
 const char* serverTest = "/sensors/testconnection";
@@ -46,17 +52,20 @@ const char* serverTest = "/sensors/testconnection";
 
 // Defined DHT pins
 #define DHTPIN1 2
-#define DHTPIN2 3
+#define DHTPIN2 1
 #define DHTTYPE DHT11
 DHT dht1(DHTPIN1, DHTTYPE);
 DHT dht2(DHTPIN2, DHTTYPE);
 
+//Defined Water Temp Pins
+#define ONE_WIRE_BUS 3 // Change to the actual pin
+
+
 //Defined Buzzer Pins
 #define BUZZER_PIN 9
 
-
 // Defined Relay pins
-#define HEATER_RELAY_PIN 13
+#define HEATER_RELAY_PIN 7
 
 // Defined Ambient Temp Sensor
 byte NTCPin = A0;
@@ -98,7 +107,7 @@ volatile int lastEncoderPos = 0;
 
 //Track time for Sensor updates
 unsigned long previousMillis = 0;
-const long interval = 60000; //1000 per second
+const long interval = 30000; //1000 per second
 
 //Debug Messages
 char heaterStatus;
@@ -120,18 +129,20 @@ void setup() {
   //Initilaize DHT Sensors
   dht1.begin();
   dht2.begin();
+  readDHT ();
 
   // Initialize the rotary encoder pins
   initEncoder ();
 
   //Start LCD Screen --> Show boot Screen
   useLCD ();
-  playBootSound(BUZZER_PIN);
-  bootScreen ();
+  
+  playBootSound(BUZZER_PIN);  //Play Boot Sound
+  bootScreen ();  //Display Boot Screen
   connectWiFi (); // Establish Wifi Connection
 
+  // //Test Connection with API
   makeGetRequest(serverTest);
-  //RPC.begin(); //Enable M4 Core
 }
 
 
@@ -152,6 +163,9 @@ void loop() {
       setRelay1 (HEATER_RELAY_PIN, temperature1, targetTemperature);
 
       debugInfo();
+      
+      lcd.clear();
+
     }
 
   // Read the switch state
@@ -170,6 +184,11 @@ void loop() {
     // Print a message to indicate the change
     Serial.print("Button pressed, pageChangeDisabled is now ");
     Serial.println(pageChangeDisabled ? "ON" : "OFF");
+
+    setRelay1 (HEATER_RELAY_PIN, temperature1, targetTemperature);
+
+    lcd.clear();
+
   }
 
   // Remember the current switch state for the next loop iteration
@@ -215,7 +234,6 @@ getEncoderPosition ();
     }
 
 delay (500);
-//getM4Message ();
 }
 
 /*************************************************
@@ -238,16 +256,6 @@ void debugInfo () {
         Serial.println("Heater is ON");
     } else {
         Serial.println("Heater is OFF");
-    }
-}
-
-void getM4Message () {
-    String buffer = "";
-    while (RPC.available()) {
-      buffer += (char)RPC.read();
-    }
-    if (buffer.length() > 0) {
-      Serial.print(buffer);
     }
 }
 
@@ -320,18 +328,6 @@ void handleEncoder() {
     int MSB = digitalRead(ROTARY_PIN_A);
     int LSB = digitalRead(ROTARY_PIN_B);
 
-  // // Check if the encoder dial is turned in the temperature mode
-  // if (pageChangeDisabled == true) {
-  //   // Check the direction of rotation
-  //   if (MSB != LSB) {
-  //     // Clockwise rotation
-  //     targetTemperature++; // Increase the target temperature by one degree
-  //   } else {
-  //     // Counter-clockwise rotation
-  //     targetTemperature--; // Decrease the target temperature by one degree
-  //   }
-  // }
-
 if (pageChangeDisabled == true) {
 
     newEncoded = (MSB << 1) | LSB;
@@ -370,7 +366,6 @@ if (pageChangeDisabled == true) {
       - Stores Connected MAC Address Information
 *****************************************/
 void connectWiFi() {
-  while (!Serial);
 
   if (WiFi.status() == WL_NO_MODULE) {
     Serial.println("Communication with WiFi module failed!");
