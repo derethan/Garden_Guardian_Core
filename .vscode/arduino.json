@@ -1,0 +1,6 @@
+{
+    "port": "COM4",
+    "configuration": "target_core=cm7,split=100_0",
+    "board": "arduino:mbed_giga:giga",
+    "programmer": "cmsis-dap"
+}
