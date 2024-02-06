@@ -1,0 +1,25 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:/Users/andg_/AppData/Local/Arduino15/packages/arduino/hardware/mbed_giga/4.0.10/**",
+                "C:/Users/andg_/Documents/www/Arduino/libraries/**",
+                "C:/Users/andg_/AppData/Local/Arduino15/packages/arduino/hardware/avr/1.8.6/**",
+                "C:/Users/andg_/AppData/Local/Arduino15/packages/arduino/hardware/mbed_giga/4.0.10/cores/arduino/"
+                ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "windowsSdkVersion": "10.0.19041.0",
+            "compilerPath": "cl.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-msvc-x64"
+        }
+    ],
+    "version": 4
+}

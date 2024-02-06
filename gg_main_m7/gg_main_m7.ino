@@ -1,6 +1,9 @@
 /*****************************************
 *  Imported Libraries and files
 *****************************************/
+//Arduino Libraries
+#include <Arduino.h>
+
 #include <SPI.h>
 #include <RPC.h>
 #include <WiFi.h>
@@ -9,6 +12,7 @@
 
 //Connections
 #include <DHT.h>
+
 //LCD Display
 #include <LiquidCrystal_I2C.h>
 LiquidCrystal_I2C lcd(0x27, 20, 4); // I2C address 0x27
@@ -129,7 +133,6 @@ void setup() {
   //Initilaize DHT Sensors
   dht1.begin();
   dht2.begin();
-  readDHT ();
 
   // Initialize the rotary encoder pins
   initEncoder ();
@@ -143,6 +146,9 @@ void setup() {
 
   // //Test Connection with API
   makeGetRequest(serverTest);
+
+    readDHT ();
+
 }
 
 
@@ -299,7 +305,7 @@ void initEncoder () {
   pinMode(ROTARY_PIN_B, INPUT_PULLUP);
   pinMode(ROTARY_BUTTON, INPUT_PULLUP);
 
-
+  //Attach Interrupt to the Left and Right Turning of the Encoder Nob
   attachInterrupt(digitalPinToInterrupt(ROTARY_PIN_A), handleEncoder, CHANGE); //left
   attachInterrupt(digitalPinToInterrupt(ROTARY_PIN_B), handleEncoder, CHANGE); //right
 
@@ -308,7 +314,7 @@ void initEncoder () {
 //Determine the current Position of the Encoder to track Pages
 void  getEncoderPosition () {
 
-      // Handle rotary encoder rotation
+      // Handle rotary encoder rotation for Page Changes
     if (encoderPos != lastEncoderPos) {
         if (encoderPos > lastEncoderPos) {
             currentPage = (currentPage + 1) % numPages;
@@ -328,7 +334,8 @@ void handleEncoder() {
     int MSB = digitalRead(ROTARY_PIN_A);
     int LSB = digitalRead(ROTARY_PIN_B);
 
-if (pageChangeDisabled == true) {
+  // Handles changing the target temperature on the Heater Screen
+  if (pageChangeDisabled == true) {
 
     newEncoded = (MSB << 1) | LSB;
     int sum = (lastEncoded << 2) | newEncoded;
@@ -342,7 +349,7 @@ if (pageChangeDisabled == true) {
     lastEncoded = newEncoded;
   }
 
-
+  //When in standard page view handle the changing of pages
   if (pageChangeDisabled == false) {
 
     newEncoded = (MSB << 1) | LSB;
