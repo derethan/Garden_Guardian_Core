@@ -64,6 +64,11 @@ DHT dht2(DHTPIN2, DHTTYPE);
 //Defined Water Temp Pins
 #define ONE_WIRE_BUS 3 // Change to the actual pin
 
+// Setup a oneWire instance to communicate with any OneWire devices
+OneWire oneWire(ONE_WIRE_BUS);
+
+// Pass our oneWire reference to Dallas Temperature sensor 
+DallasTemperature sensors(&oneWire);
 
 //Defined Buzzer Pins
 #define BUZZER_PIN 9
@@ -134,6 +139,7 @@ void setup() {
   dht1.begin();
   dht2.begin();
 
+
   // Initialize the rotary encoder pins
   initEncoder ();
 
@@ -144,10 +150,10 @@ void setup() {
   bootScreen ();  //Display Boot Screen
   connectWiFi (); // Establish Wifi Connection
 
-  // //Test Connection with API
+  //Test Connection with API
   makeGetRequest(serverTest);
 
-    readDHT ();
+  readDHT ();
 
 }
 
@@ -162,6 +168,7 @@ void loop() {
 
     if (currentMillis - previousMillis >= interval) {
       previousMillis = currentMillis;
+
 
       readDHT();
       readAmbientTemp ();
@@ -263,6 +270,7 @@ void debugInfo () {
     } else {
         Serial.println("Heater is OFF");
     }
+    
 }
 
 
@@ -429,10 +437,17 @@ void printWifiStatus() {
 *****************************************/
 
 void makeGetRequest(const char* serverRoute) {
+  Serial.println("Attempting to Connect to API Server");
   WiFiClient wifiClient;
   HttpClient client(wifiClient, serverAddress, serverPort);
 
   client.get(serverRoute);
+
+  //Check if the Connection was Successfull
+  if (!client.connected()) {
+    Serial.println("Failed to Connect to API Server");
+    return;
+  }
 
   int statusCode = client.responseStatusCode();
   String response = client.responseBody();
