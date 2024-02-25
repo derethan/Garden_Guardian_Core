@@ -8,6 +8,8 @@
 #include <RPC.h>
 #include <WiFi.h>
 #include <ArduinoHttpClient.h>
+#include <ArduinoJson.h>
+
 #include "pitches.h"
 
 //Connections
@@ -63,7 +65,7 @@ DHT dht1(DHTPIN1, DHTTYPE);
 DHT dht2(DHTPIN2, DHTTYPE);
 
 //Defined Water Temp Pins
-MicroDS18B20 <3> sensor;
+MicroDS18B20<3> sensor;
 
 //Defined Buzzer Pins
 #define BUZZER_PIN 9
@@ -149,7 +151,6 @@ void setup() {
 
   //Test Connection with API
   makeGetRequest(serverTest);
-
 }
 
 
@@ -168,7 +169,7 @@ void loop() {
 
     readDHT();
     readAmbientTemp();
-    readWaterTemps ();
+    readWaterTemps();
 
     setRelay1(HEATER_RELAY_PIN, temperature1, targetTemperature);
 
@@ -176,7 +177,7 @@ void loop() {
 
     lcd.clear();
 
-    postSensorData (serverRoute);
+    postSensorData(serverRoute);
   }
 
   // Read the switch state
@@ -279,12 +280,12 @@ const int sensorArray_Size = 1000;
 //Storage Variables for Sensor Data
 int tempData[sensorArray_Size];
 int humidityData[sensorArray_Size];
- // if errors with temp might need to change from INT
+// if errors with temp might need to change from INT
 int currentIndexForDHT = 0;
 
 void readDHT() {
 
-  if (!dht1.readTemperature ()) {
+  if (!dht1.readTemperature()) {
     temperature1 = 0;
     humidity1 = 0;
     return;
@@ -292,16 +293,18 @@ void readDHT() {
   temperature1 = dht1.readTemperature();
   humidity1 = dht1.readHumidity();
 
-  if (currentIndexForDHT < sensorArray_Size){
+  if (currentIndexForDHT < sensorArray_Size) {
     tempData[currentIndexForDHT] = temperature1;
     humidityData[currentIndexForDHT] = humidity1;
 
     currentIndexForDHT++;
+  } else {
+    resetSensorArray();
   }
 }
 
 //Storage Variables for Sensor Data
-int TempData[sensorArray_Size];
+int deviceTempData[sensorArray_Size];
 int currentIndexForTemp = 0;
 
 void readAmbientTemp() {
@@ -324,9 +327,11 @@ void readAmbientTemp() {
   ambientTemp = 1.0 / ambientTemp;                      // Invert
   ambientTemp -= 273.15;                                // convert to C
 
-  if (currentIndexForTemp < sensorArray_Size){
-    TempData[currentIndexForTemp] = ambientTemp;
+  if (currentIndexForTemp < sensorArray_Size) {
+    deviceTempData[currentIndexForTemp] = ambientTemp;
     currentIndexForTemp++;
+  } else {
+    resetSensorArray();
   }
 }
 
@@ -345,11 +350,25 @@ void readWaterTemps() {
       waterTempData[currentIndexForWaterTemp] = data;
       currentIndexForWaterTemp++;
     } else {
-
-      //handle Data Array being Full
+      resetSensorArray();
     }
   }
 }
+
+void resetSensorArray() {
+
+  int currentIndexForDHT = 0;
+  currentIndexForTemp = 0;
+  currentIndexForWaterTemp = 0;
+
+  for (int i = 0; i < sensorArray_Size; i++) {
+    tempData[i] = 0;
+    humidityData[i] = 0;
+    deviceTempData[i] = 0;
+    waterTempData[i] = 0;
+  }
+}
+
 /*****************************************
 *   Rotary Encoder functions
       - Initializes the Encoder
@@ -487,10 +506,12 @@ void printWifiStatus() {
 *****************************************/
 
 void makeGetRequest(const char* serverRoute) {
+
+  client.stop();
+
   Serial.println("Attempting to Connect to API Server");
 
-
-//Send a Get Request to the Server
+  //Send a Get Request to the Server
   client.get(serverRoute);
 
   //Check if the Connection was Successfull
@@ -512,23 +533,56 @@ void makeGetRequest(const char* serverRoute) {
   }
 }
 
-void postSensorData (const char* serverRoute){
+
+
+String convertToJSON() {
+  StaticJsonDocument<500> doc;  // Create a static JSON document.
+
+  for (int i = 0; i < sensorArray_Size; i++) {
+
+    if (tempData[i] != 0) {
+      doc["Temperature "] = tempData[i];
+    }
+    if (humidityData[i] != 0) {
+      doc["Humidity "] = humidityData[i];
+    }
+    if (deviceTempData[i] != 0) {
+      doc["Device Temp "] = deviceTempData[i];
+    }
+    if (waterTempData[i] != 0) {
+      doc["Water Temp "] = waterTempData[i];
+    }
+  }
+
+  // Convert the JSON document to a string
+  String postData;
+  serializeJson(doc, postData);
+
+  return postData;
+}
+
+
+void postSensorData(const char* serverRoute) {
+
+  client.stop();
 
   Serial.println("making POST request");
 
   String contentType = "application/json";
-  String postData = "{\"sensorId\":\"123\", \"temperature\":23.4, \"humidity\":45.6}";
+  String postData = convertToJSON();
 
-  client.beginRequest ();
-  client.post (serverRoute);
+  Serial.println(postData);
 
-    //Check if the Connection was Successfull
+  client.beginRequest();
+  client.post(serverRoute);
+
+  //Check if the Connection was Successfull
   if (!client.connected()) {
     Serial.println("Failed to send Data");
     return;
   }
 
-client.sendHeader("Content-Type", contentType);
+  client.sendHeader("Content-Type", contentType);
   client.sendHeader("Content-Length", postData.length());
   client.beginBody();
   client.print(postData);
@@ -538,9 +592,15 @@ client.sendHeader("Content-Type", contentType);
   int statusCode = client.responseStatusCode();
   String response = client.responseBody();
 
-  Serial.print("Status code: ");
-  Serial.println(statusCode);
-  Serial.print("Response: ");
-  Serial.println(response);
+  if (statusCode > 0) {
+    Serial.print("HTTP Response Status Code: ");
+    Serial.println(statusCode);
+    Serial.print("Response: ");
+    Serial.println(response);
 
+    resetSensorArray();
+
+  } else {
+    Serial.println("HTTP Request failed");
+  }
 }
