@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <ArduinoHttpClient.h>
 #include <ArduinoJson.h>
+#include <ctime>
 
 #include "pitches.h"
 
@@ -175,9 +176,9 @@ void loop() {
 
     debugInfo();
 
-    lcd.clear();
-
     postSensorData(serverRoute);
+
+    lcd.clear();
   }
 
   // Read the switch state
@@ -250,6 +251,15 @@ void loop() {
 /*************************************************
 *       Debug and Com Message Functions Below
 ************************************************/
+String getCurrentTime() {
+  time_t rawtime;
+  struct tm * timeinfo;
+
+  time (&rawtime);
+  timeinfo = localtime (&rawtime);
+
+  return String(asctime(timeinfo));
+}
 
 void debugInfo() {
   Serial.print("Ambient Temperature: ");
@@ -304,7 +314,12 @@ void readDHT() {
 }
 
 //Storage Variables for Sensor Data
-int deviceTempData[sensorArray_Size];
+struct sensorData {
+float data;
+String timestamp;
+};
+
+sensorData deviceTempData[sensorArray_Size];
 int currentIndexForTemp = 0;
 
 void readAmbientTemp() {
@@ -328,7 +343,8 @@ void readAmbientTemp() {
   ambientTemp -= 273.15;                                // convert to C
 
   if (currentIndexForTemp < sensorArray_Size) {
-    deviceTempData[currentIndexForTemp] = ambientTemp;
+    deviceTempData[currentIndexForTemp].data = ambientTemp;
+    deviceTempData[currentIndexForTemp].timestamp = getCurrentTime ();
     currentIndexForTemp++;
   } else {
     resetSensorArray();
@@ -364,7 +380,7 @@ void resetSensorArray() {
   for (int i = 0; i < sensorArray_Size; i++) {
     tempData[i] = 0;
     humidityData[i] = 0;
-    deviceTempData[i] = 0;
+    deviceTempData[i].data = 0;
     waterTempData[i] = 0;
   }
 }
@@ -538,22 +554,25 @@ void makeGetRequest(const char* serverRoute) {
 String convertToJSON() {
   StaticJsonDocument<500> doc;  // Create a static JSON document.
 
+  JsonArray Data = doc.createNestedArray("Data");
+
   for (int i = 0; i < sensorArray_Size; i++) {
 
-    if (tempData[i] != 0) {
-      doc["Temperature "] = tempData[i];
-    }
-    if (humidityData[i] != 0) {
-      doc["Humidity "] = humidityData[i];
-    }
-    if (deviceTempData[i] != 0) {
-      doc["Device Temp "] = deviceTempData[i];
-    }
-    if (waterTempData[i] != 0) {
-      doc["Water Temp "] = waterTempData[i];
+    //Check if the iteration has no data
+    if (tempData[i] != 0 || humidityData[i] != 0 || deviceTempData[i].data != 0 || waterTempData[i] != 0) {
+      //If there not all 0 then create an object to store this iterations data
+      JsonObject container = Data.createNestedObject();
+
+      JsonObject sensorDataObject = container.createNestedObject("SensorData");
+
+      if (deviceTempData[i].data != 0) {
+        JsonObject DeviceTempInfo = sensorDataObject.createNestedObject("DeviceTemp");
+
+        DeviceTempInfo["Value"] = deviceTempData[i].data;
+        DeviceTempInfo["Time"] = deviceTempData[i].timestamp;
+      }
     }
   }
-
   // Convert the JSON document to a string
   String postData;
   serializeJson(doc, postData);
@@ -561,26 +580,43 @@ String convertToJSON() {
   return postData;
 }
 
+// if (tempData[i] != 0) {
+//     JsonObject tempDataObject = sensorDataObject.createNestedObject('Temperature');
+//   tempDataObject["Value "] = tempData[i];
+// }
+// if (humidityData[i] != 0) {
+//   JsonObject HumidityDataObject = sensorDataObject.createNestedObject('Humidity');
+//   HumidityDataObject["Value "] = humidityData[i];
+// }
+// if (deviceTempData[i] != 0) {
+//   JsonObject DeviceTempDataObject = sensorDataObject.createNestedObject('DeviceTemp');
+//   DeviceTempDataObject["Value "] = deviceTempData[i];
+// }
+// if (waterTempData[i] != 0) {
+//   JsonObject WaterTempDataObject = sensorDataObject.createNestedObject('WaterTemp');
+//   WaterTempDataObject["Value "] = waterTempData[i];
+// }
+
+
 
 void postSensorData(const char* serverRoute) {
-
-  client.stop();
 
   Serial.println("making POST request");
 
   String contentType = "application/json";
   String postData = convertToJSON();
 
-  Serial.println(postData);
-
   client.beginRequest();
   client.post(serverRoute);
 
   //Check if the Connection was Successfull
   if (!client.connected()) {
+    client.stop();
     Serial.println("Failed to send Data");
     return;
   }
+
+  Serial.println(postData);
 
   client.sendHeader("Content-Type", contentType);
   client.sendHeader("Content-Length", postData.length());
