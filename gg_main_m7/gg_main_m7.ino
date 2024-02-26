@@ -105,7 +105,7 @@ float targetTemperature = INITIAL_TEMP;
 // Define the current page variable and the number of pages
 int currentPage = 0;
 int lastPage = 0;
-int numPages = 4;  // You have 4 pages - DHT, Relay, Ambient Temp, and Water Flow
+int numPages = 5;  // DHT Temp, Relay, Ambient Temp, Water Flow, Water Temp
 
 volatile bool pageChangeDisabled = false;
 bool lastSwitchState = LOW;
@@ -118,12 +118,17 @@ volatile int lastEncoderPos = 0;
 unsigned long previousMillis = 0;
 const long interval = 30000;  //1000 per second
 
+//Track time for sending Sensor data to server
+unsigned long sendDataPreviousMillis = 0;
+const long sendDataInterval = 300000;  //1000 per second
+
 //Debug Messages
 char heaterStatus;
 
-
 // Define the variable to store the switch state
 bool switchState = false;
+
+
 /*****************************************
 *   SETUP FUNCTION
 *****************************************/
@@ -146,8 +151,8 @@ void setup() {
   useLCD();
 
   // playBootSound(BUZZER_PIN);  //Play Boot Sound
-  bootScreen();               //Display Boot Screen
-  connectWiFi();              // Establish Wifi Connection
+  bootScreen();   //Display Boot Screen
+  connectWiFi();  // Establish Wifi Connection
 
   // Initialize NTP Client
   timeClient.begin();
@@ -163,8 +168,8 @@ void setup() {
 
 void loop() {
 
+  //Timer for Sensor Readings
   unsigned long currentMillis = millis();
-
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
 
@@ -178,19 +183,24 @@ void loop() {
 
     debugInfo();
 
-    postSensorData(serverRoute);
 
     lcd.clear();
   }
 
-  // Read the switch state
-  switchState = digitalRead(ROTARY_BUTTON);
+  //Timer for sending sensor data to the server
+  unsigned long sendDataCurrentMillis = millis();
+  if (sendDataCurrentMillis - sendDataPreviousMillis >= sendDataInterval) {
+    sendDataPreviousMillis = sendDataCurrentMillis;
+    postSensorData(serverRoute);
+  }
 
   // Check if the button is pressed
+  switchState = digitalRead(ROTARY_BUTTON);  // Read the switch state
   if (switchState == LOW && lastSwitchState == HIGH) {
 
+    // If the Button is pressed on set page, Toggle alternate Page (Used for settings, etc)
     switch (currentPage) {
-      case 1:
+      case 1:  // Heater Page
         // Toggle the mode when the button is pressed
         pageChangeDisabled = !pageChangeDisabled;  // Switch between true and false
         break;
@@ -208,6 +218,8 @@ void loop() {
   // Remember the current switch state for the next loop iteration
   lastSwitchState = switchState;
 
+
+  // Displays the LCD Pages
   if (pageChangeDisabled == false) {
 
     getEncoderPosition();
@@ -230,6 +242,10 @@ void loop() {
         displayWaterFlow(currentPage, lastPage);
         lastPage = currentPage;
         break;
+      case 4:
+        displayWaterTemp(waterTemp, currentPage, lastPage);
+        lastPage = currentPage;
+        break;
     }
   } else {
 
@@ -243,6 +259,8 @@ void loop() {
       case 2:
         break;
       case 3:
+        break;
+      case 4:
         break;
     }
   }
@@ -258,10 +276,8 @@ void loop() {
 void debugInfo() {
   Serial.print("Ambient Temperature: ");
   Serial.println(ambientTemp);
-  delay(1000);
   Serial.print("DHT Temp Sensor 1: ");
   Serial.println(temperature1);
-  delay(1000);
   Serial.print("DHT Humidity Sensor 1: ");
   Serial.println(humidity1);
 
