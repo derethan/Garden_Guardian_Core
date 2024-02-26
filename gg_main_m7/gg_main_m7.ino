@@ -9,7 +9,7 @@
 #include <WiFi.h>
 #include <ArduinoHttpClient.h>
 #include <ArduinoJson.h>
-#include <ctime>
+#include <math.h>
 
 #include "pitches.h"
 
@@ -32,6 +32,7 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);  // I2C address 0x27
 #include "lcd_functions.h"
 #include "relay_control.h"
 #include "buzzer_functions.h"
+#include "getTime.h"
 
 
 /*****************************************
@@ -133,12 +134,10 @@ void setup() {
   digitalWrite(HEATER_RELAY_PIN, LOW);  // Initially, turn the relay off
   pinMode(BUZZER_PIN, OUTPUT);
 
-
   //Initilaize DHT Sensors
   dht1.begin();
   dht2.begin();
   sensor.requestTemp();
-
 
   // Initialize the rotary encoder pins
   initEncoder();
@@ -146,9 +145,12 @@ void setup() {
   //Start LCD Screen --> Show boot Screen
   useLCD();
 
-  playBootSound(BUZZER_PIN);  //Play Boot Sound
+  // playBootSound(BUZZER_PIN);  //Play Boot Sound
   bootScreen();               //Display Boot Screen
   connectWiFi();              // Establish Wifi Connection
+
+  // Initialize NTP Client
+  timeClient.begin();
 
   //Test Connection with API
   makeGetRequest(serverTest);
@@ -251,15 +253,7 @@ void loop() {
 /*************************************************
 *       Debug and Com Message Functions Below
 ************************************************/
-String getCurrentTime() {
-  time_t rawtime;
-  struct tm * timeinfo;
 
-  time (&rawtime);
-  timeinfo = localtime (&rawtime);
-
-  return String(asctime(timeinfo));
-}
 
 void debugInfo() {
   Serial.print("Ambient Temperature: ");
@@ -284,28 +278,38 @@ void debugInfo() {
 /*************************************************
 *       Sensor Reading Functions Below
 ************************************************/
-const int sensorArray_Size = 1000;
-
+const int sensorArray_Size = 100;
 
 //Storage Variables for Sensor Data
-int tempData[sensorArray_Size];
-int humidityData[sensorArray_Size];
+struct sensorData {
+  float data;
+  String timestamp;
+};
+
+//SRead the Temoerature and Humidity
+sensorData tempData[sensorArray_Size];
+sensorData humidityData[sensorArray_Size];
 // if errors with temp might need to change from INT
 int currentIndexForDHT = 0;
 
 void readDHT() {
 
-  if (!dht1.readTemperature()) {
+  if (isnan(dht1.readTemperature())) {
     temperature1 = 0;
     humidity1 = 0;
     return;
   }
+
   temperature1 = dht1.readTemperature();
   humidity1 = dht1.readHumidity();
 
   if (currentIndexForDHT < sensorArray_Size) {
-    tempData[currentIndexForDHT] = temperature1;
-    humidityData[currentIndexForDHT] = humidity1;
+    tempData[currentIndexForDHT].data = temperature1;
+    tempData[currentIndexForDHT].timestamp = getCurrentTime();
+
+    humidityData[currentIndexForDHT].data = humidity1;
+    humidityData[currentIndexForDHT].timestamp = getCurrentTime();
+
 
     currentIndexForDHT++;
   } else {
@@ -313,12 +317,7 @@ void readDHT() {
   }
 }
 
-//Storage Variables for Sensor Data
-struct sensorData {
-float data;
-String timestamp;
-};
-
+//Read the Device Temperature
 sensorData deviceTempData[sensorArray_Size];
 int currentIndexForTemp = 0;
 
@@ -344,15 +343,15 @@ void readAmbientTemp() {
 
   if (currentIndexForTemp < sensorArray_Size) {
     deviceTempData[currentIndexForTemp].data = ambientTemp;
-    deviceTempData[currentIndexForTemp].timestamp = getCurrentTime ();
+    deviceTempData[currentIndexForTemp].timestamp = getCurrentTime();
     currentIndexForTemp++;
   } else {
     resetSensorArray();
   }
 }
 
-//Storage Variables for Sensor Data
-int waterTempData[sensorArray_Size];
+//Read the water Temperature
+sensorData waterTempData[sensorArray_Size];
 int currentIndexForWaterTemp = 0;
 
 void readWaterTemps() {
@@ -363,7 +362,8 @@ void readWaterTemps() {
     waterTemp = data;
 
     if (currentIndexForWaterTemp < sensorArray_Size) {
-      waterTempData[currentIndexForWaterTemp] = data;
+      waterTempData[currentIndexForWaterTemp].data = data;
+      waterTempData[currentIndexForWaterTemp].timestamp = getCurrentTime();
       currentIndexForWaterTemp++;
     } else {
       resetSensorArray();
@@ -371,6 +371,7 @@ void readWaterTemps() {
   }
 }
 
+// Reset the Sensor Array values to 0
 void resetSensorArray() {
 
   int currentIndexForDHT = 0;
@@ -378,10 +379,10 @@ void resetSensorArray() {
   currentIndexForWaterTemp = 0;
 
   for (int i = 0; i < sensorArray_Size; i++) {
-    tempData[i] = 0;
-    humidityData[i] = 0;
+    tempData[i].data = 0;
+    humidityData[i].data = 0;
     deviceTempData[i].data = 0;
-    waterTempData[i] = 0;
+    waterTempData[i].data = 0;
   }
 }
 
@@ -559,17 +560,36 @@ String convertToJSON() {
   for (int i = 0; i < sensorArray_Size; i++) {
 
     //Check if the iteration has no data
-    if (tempData[i] != 0 || humidityData[i] != 0 || deviceTempData[i].data != 0 || waterTempData[i] != 0) {
-      //If there not all 0 then create an object to store this iterations data
-      JsonObject container = Data.createNestedObject();
+    if (tempData[i].data != 0 || humidityData[i].data != 0 || deviceTempData[i].data != 0 || waterTempData[i].data != 0) {
 
-      JsonObject sensorDataObject = container.createNestedObject("SensorData");
+      //If there not all 0 then create an object to store this iterations data
+      JsonObject sensorDataObject = Data.createNestedObject();
+
+      // JsonObject sensorDataObject = container.createNestedObject("SensorData");
 
       if (deviceTempData[i].data != 0) {
         JsonObject DeviceTempInfo = sensorDataObject.createNestedObject("DeviceTemp");
 
         DeviceTempInfo["Value"] = deviceTempData[i].data;
         DeviceTempInfo["Time"] = deviceTempData[i].timestamp;
+      }
+
+      if (tempData[i].data != 0) {
+        JsonObject tempDatainfo = sensorDataObject.createNestedObject("Temperature");
+        tempDatainfo["Value"] = tempData[i].data;
+        tempDatainfo["Time"] = tempData[i].timestamp;
+      }
+
+      if (humidityData[i].data != 0) {
+        JsonObject HumidityDataInfo = sensorDataObject.createNestedObject("Humidity");
+        HumidityDataInfo["Value"] = humidityData[i].data;
+        HumidityDataInfo["Time"] = humidityData[i].timestamp;
+      }
+
+      if (waterTempData[i].data != 0) {
+        JsonObject WaterTempInfo = sensorDataObject.createNestedObject("WaterTemp");
+        WaterTempInfo["Value"] = waterTempData[i].data;
+        WaterTempInfo["Time"] = waterTempData[i].timestamp;
       }
     }
   }
@@ -579,23 +599,6 @@ String convertToJSON() {
 
   return postData;
 }
-
-// if (tempData[i] != 0) {
-//     JsonObject tempDataObject = sensorDataObject.createNestedObject('Temperature');
-//   tempDataObject["Value "] = tempData[i];
-// }
-// if (humidityData[i] != 0) {
-//   JsonObject HumidityDataObject = sensorDataObject.createNestedObject('Humidity');
-//   HumidityDataObject["Value "] = humidityData[i];
-// }
-// if (deviceTempData[i] != 0) {
-//   JsonObject DeviceTempDataObject = sensorDataObject.createNestedObject('DeviceTemp');
-//   DeviceTempDataObject["Value "] = deviceTempData[i];
-// }
-// if (waterTempData[i] != 0) {
-//   JsonObject WaterTempDataObject = sensorDataObject.createNestedObject('WaterTemp');
-//   WaterTempDataObject["Value "] = waterTempData[i];
-// }
 
 
 
