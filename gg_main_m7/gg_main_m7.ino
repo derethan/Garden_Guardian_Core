@@ -34,7 +34,6 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);  // I2C address 0x27
 #include "buzzer_functions.h"
 #include "getTime.h"
 
-
 /*****************************************
 *   Communications for WIFI and Server
 *****************************************/
@@ -93,6 +92,9 @@ byte NTCPin = A0;
 /*****************************************
 *   GLOBAL VARIABLES
 *****************************************/
+//ID Variables
+String ID;
+
 //Temperature Variables
 float temperature1;
 float humidity1;
@@ -106,8 +108,10 @@ float targetTemperature = INITIAL_TEMP;
 int currentPage = 0;
 int lastPage = 0;
 int numPages = 5;  // DHT Temp, Relay, Ambient Temp, Water Flow, Water Temp
-
 volatile bool pageChangeDisabled = false;
+
+// Define the variable to store the switch state
+bool switchState = false;
 bool lastSwitchState = LOW;
 
 //Encoder prositions
@@ -125,8 +129,7 @@ const long sendDataInterval = 300000;  //1000 per second
 //Debug Messages
 char heaterStatus;
 
-// Define the variable to store the switch state
-bool switchState = false;
+
 
 
 /*****************************************
@@ -134,6 +137,9 @@ bool switchState = false;
 *****************************************/
 void setup() {
   Serial.begin(9600);
+
+  //Get ID's
+  ID = "GG-001";
 
   pinMode(HEATER_RELAY_PIN, OUTPUT);    // Set pinMode for the Heater Relay Pin
   digitalWrite(HEATER_RELAY_PIN, LOW);  // Initially, turn the relay off
@@ -581,7 +587,9 @@ String convertToJSON() {
       //If there not all 0 then create an object to store this iterations data
       JsonObject sensorDataObject = Data.createNestedObject();
 
-      // JsonObject sensorDataObject = container.createNestedObject("SensorData");
+      JsonObject DeviceInfo = sensorDataObject.createNestedObject("Device");
+      DeviceInfo["DeviceID"] = ID;
+
 
       if (deviceTempData[i].data != 0) {
         JsonObject DeviceTempInfo = sensorDataObject.createNestedObject("DeviceTemp");
