@@ -93,7 +93,7 @@ byte NTCPin = A0;
 *   GLOBAL VARIABLES
 *****************************************/
 //ID Variables
-String ID;
+String device_id;
 
 //Temperature Variables
 float temperature1;
@@ -124,7 +124,9 @@ const long interval = 30000;  //1000 per second
 
 //Track time for sending Sensor data to server
 unsigned long sendDataPreviousMillis = 0;
-const long sendDataInterval = 300000;  //1000 per second
+const long sendDataInterval = 60000;  //1000 per second
+
+//Add Time Check for Device Active Check
 
 //Debug Messages
 char heaterStatus;
@@ -139,7 +141,7 @@ void setup() {
   Serial.begin(9600);
 
   //Get ID's
-  ID = "GG-001";
+  device_id = "GG-001";
 
   pinMode(HEATER_RELAY_PIN, OUTPUT);    // Set pinMode for the Heater Relay Pin
   digitalWrite(HEATER_RELAY_PIN, LOW);  // Initially, turn the relay off
@@ -304,6 +306,7 @@ const int sensorArray_Size = 100;
 
 //Storage Variables for Sensor Data
 struct sensorData {
+  String name;
   float data;
   String timestamp;
 };
@@ -326,8 +329,12 @@ void readDHT() {
   humidity1 = dht1.readHumidity();
 
   if (currentIndexForDHT < sensorArray_Size) {
+    tempData[currentIndexForDHT].name = "Temperature";
+
     tempData[currentIndexForDHT].data = temperature1;
     tempData[currentIndexForDHT].timestamp = getCurrentTime();
+
+    humidityData[currentIndexForDHT].name = "Humidity";
 
     humidityData[currentIndexForDHT].data = humidity1;
     humidityData[currentIndexForDHT].timestamp = getCurrentTime();
@@ -364,6 +371,8 @@ void readAmbientTemp() {
   ambientTemp -= 273.15;                                // convert to C
 
   if (currentIndexForTemp < sensorArray_Size) {
+    deviceTempData[currentIndexForTemp].name = "Device Temperature";
+
     deviceTempData[currentIndexForTemp].data = ambientTemp;
     deviceTempData[currentIndexForTemp].timestamp = getCurrentTime();
     currentIndexForTemp++;
@@ -378,18 +387,23 @@ int currentIndexForWaterTemp = 0;
 
 void readWaterTemps() {
 
-  if (sensor.readTemp()) {
-    //Read the Sensor
-    int data = sensor.getTemp();
-    waterTemp = data;
+  if (!sensor.readTemp()) {
+    waterTemp = 0;
+    return;
+  }
 
-    if (currentIndexForWaterTemp < sensorArray_Size) {
-      waterTempData[currentIndexForWaterTemp].data = data;
-      waterTempData[currentIndexForWaterTemp].timestamp = getCurrentTime();
-      currentIndexForWaterTemp++;
-    } else {
-      resetSensorArray();
-    }
+  //Read the Sensor
+  int data = sensor.getTemp();
+  waterTemp = data;
+
+  if (currentIndexForWaterTemp < sensorArray_Size) {
+    waterTempData[currentIndexForWaterTemp].name = "Water Temperature";
+
+    waterTempData[currentIndexForWaterTemp].data = waterTemp;
+    waterTempData[currentIndexForWaterTemp].timestamp = getCurrentTime();
+    currentIndexForWaterTemp++;
+  } else {
+    resetSensorArray();
   }
 }
 
@@ -545,13 +559,14 @@ void printWifiStatus() {
 *****************************************/
 
 void makeGetRequest(const char* serverRoute) {
-
   client.stop();
+
+  String queryString = "?deviceID=" + device_id;
 
   Serial.println("Attempting to Connect to API Server");
 
   //Send a Get Request to the Server
-  client.get(serverRoute);
+  client.get(serverRoute + queryString);
 
   //Check if the Connection was Successfull
   if (!client.connected()) {
@@ -575,7 +590,7 @@ void makeGetRequest(const char* serverRoute) {
 
 
 String convertToJSON() {
-  StaticJsonDocument<500> doc;  // Create a static JSON document.
+  StaticJsonDocument<1000> doc;  // Create a static JSON document.
 
   JsonArray Data = doc.createNestedArray("Data");
 
@@ -588,32 +603,36 @@ String convertToJSON() {
       JsonObject sensorDataObject = Data.createNestedObject();
 
       JsonObject DeviceInfo = sensorDataObject.createNestedObject("Device");
-      DeviceInfo["DeviceID"] = ID;
+      DeviceInfo["DeviceID"] = device_id;
 
+      JsonArray SensorReadings = sensorDataObject.createNestedArray("SensorReadings");
 
       if (deviceTempData[i].data != 0) {
-        JsonObject DeviceTempInfo = sensorDataObject.createNestedObject("DeviceTemp");
-
-        DeviceTempInfo["Value"] = deviceTempData[i].data;
-        DeviceTempInfo["Time"] = deviceTempData[i].timestamp;
+        JsonObject deviceTempReading = SensorReadings.createNestedObject();
+        deviceTempReading["Name"] = deviceTempData[i].name;
+        deviceTempReading["Value"] = deviceTempData[i].data;
+        deviceTempReading["Time"] = deviceTempData[i].timestamp;
       }
 
       if (tempData[i].data != 0) {
-        JsonObject tempDatainfo = sensorDataObject.createNestedObject("Temperature");
-        tempDatainfo["Value"] = tempData[i].data;
-        tempDatainfo["Time"] = tempData[i].timestamp;
+        JsonObject tempReading = SensorReadings.createNestedObject();
+        tempReading["Name"] = tempData[i].name;
+        tempReading["Value"] = tempData[i].data;
+        tempReading["Time"] = tempData[i].timestamp;
       }
 
       if (humidityData[i].data != 0) {
-        JsonObject HumidityDataInfo = sensorDataObject.createNestedObject("Humidity");
-        HumidityDataInfo["Value"] = humidityData[i].data;
-        HumidityDataInfo["Time"] = humidityData[i].timestamp;
+        JsonObject humidityReading = SensorReadings.createNestedObject();
+        humidityReading["Name"] = humidityData[i].name;
+        humidityReading["Value"] = humidityData[i].data;
+        humidityReading["Time"] = humidityData[i].timestamp;
       }
 
       if (waterTempData[i].data != 0) {
-        JsonObject WaterTempInfo = sensorDataObject.createNestedObject("WaterTemp");
-        WaterTempInfo["Value"] = waterTempData[i].data;
-        WaterTempInfo["Time"] = waterTempData[i].timestamp;
+        JsonObject waterTempReading = SensorReadings.createNestedObject();
+        waterTempReading["Name"] = waterTempData[i].name;
+        waterTempReading["Value"] = waterTempData[i].data;
+        waterTempReading["Time"] = waterTempData[i].timestamp;
       }
     }
   }
