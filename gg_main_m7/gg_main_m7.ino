@@ -49,6 +49,7 @@ const int serverPort = SECRET_PORT;
 const char* serverRoute = "/sensors/sendData";
 const char* serverRouteGet = "/sensors/retrieve";
 const char* serverTest = "/sensors/testconnection";
+const char* ping = "/sensors/ping";
 
 HttpClient client(wifi, serverAddress, serverPort);
 
@@ -124,9 +125,11 @@ const long interval = 30000;  //1000 per second
 
 //Track time for sending Sensor data to server
 unsigned long sendDataPreviousMillis = 0;
-const long sendDataInterval = 60000;  //1000 per second
+const long sendDataInterval = 300000;  //1000 per second
 
-//Add Time Check for Device Active Check
+//Track time for sending pings to the server (Used to track device status)
+unsigned long sendPingPreviousMillis = 0;
+const long sendPingInterval = 60000;
 
 //Debug Messages
 char heaterStatus;
@@ -200,6 +203,16 @@ void loop() {
   if (sendDataCurrentMillis - sendDataPreviousMillis >= sendDataInterval) {
     sendDataPreviousMillis = sendDataCurrentMillis;
     postSensorData(serverRoute);
+  }
+
+  //Timer for Sending Pings to the server
+  unsigned long sendPingCurrentMillis = millis ();
+  if (sendPingCurrentMillis - sendPingPreviousMillis >= sendPingInterval) {
+    sendPingPreviousMillis = sendPingCurrentMillis;
+
+    //Send the Ping To the Server
+    makeGetRequest (ping);
+    
   }
 
   // Check if the button is pressed
@@ -574,6 +587,14 @@ void makeGetRequest(const char* serverRoute) {
     return;
   }
 
+  // Wait for a response with a timeout
+  unsigned long startTime = millis();
+  while(!client.available()) {
+    if(millis() - startTime > 5000) { // 5 second timeout
+      Serial.println("Server Response Timeout");
+      return;
+    }
+  }
   int statusCode = client.responseStatusCode();
   String response = client.responseBody();
 
