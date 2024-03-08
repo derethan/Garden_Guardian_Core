@@ -13,6 +13,7 @@
 
 #include "pitches.h"
 
+
 //Connections
 #include <DHT.h>
 #include <microDS18B20.h>
@@ -125,7 +126,7 @@ const long interval = 30000;  //1000 per second
 
 //Track time for sending Sensor data to server
 unsigned long sendDataPreviousMillis = 0;
-const long sendDataInterval = 300000;  //1000 per second
+const long sendDataInterval = 60000;  //1000 per second
 
 //Track time for sending pings to the server (Used to track device status)
 unsigned long sendPingPreviousMillis = 0;
@@ -134,7 +135,16 @@ const long sendPingInterval = 60000;
 //Debug Messages
 char heaterStatus;
 
-
+//Storage Variables for Sensor Data
+struct sensorData {
+  String name;
+  String sensorName;
+  unsigned long timestamp;
+  String sensorType;
+  String sensorLocation;
+  String dataType;
+  float data;
+};
 
 
 /*****************************************
@@ -167,6 +177,7 @@ void setup() {
 
   // Initialize NTP Client
   timeClient.begin();
+
 
   //Test Connection with API
   makeGetRequest(serverTest);
@@ -206,13 +217,12 @@ void loop() {
   }
 
   //Timer for Sending Pings to the server
-  unsigned long sendPingCurrentMillis = millis ();
+  unsigned long sendPingCurrentMillis = millis();
   if (sendPingCurrentMillis - sendPingPreviousMillis >= sendPingInterval) {
     sendPingPreviousMillis = sendPingCurrentMillis;
 
     //Send the Ping To the Server
-    makeGetRequest (ping);
-    
+    makeGetRequest(ping);
   }
 
   // Check if the button is pressed
@@ -317,14 +327,7 @@ void debugInfo() {
 ************************************************/
 const int sensorArray_Size = 100;
 
-//Storage Variables for Sensor Data
-struct sensorData {
-  String name;
-  float data;
-  String timestamp;
-};
-
-//SRead the Temoerature and Humidity
+//Read the Temperature and Humidity
 sensorData tempData[sensorArray_Size];
 sensorData humidityData[sensorArray_Size];
 // if errors with temp might need to change from INT
@@ -342,13 +345,26 @@ void readDHT() {
   humidity1 = dht1.readHumidity();
 
   if (currentIndexForDHT < sensorArray_Size) {
-    tempData[currentIndexForDHT].name = "Temperature";
 
+    //Sensor Information
+    tempData[currentIndexForDHT].name = "Temperature Sensor";
+    tempData[currentIndexForDHT].sensorName = "Sensor 1";
+    tempData[currentIndexForDHT].sensorType = "DHT";
+    tempData[currentIndexForDHT].sensorLocation = "Greenhouse 1";
+    tempData[currentIndexForDHT].dataType = "Temperature";
+
+    //Sensor Data
     tempData[currentIndexForDHT].data = temperature1;
     tempData[currentIndexForDHT].timestamp = getCurrentTime();
 
-    humidityData[currentIndexForDHT].name = "Humidity";
+    //Sensor Information
+    humidityData[currentIndexForDHT].name = "Temperature Sensor";
+    humidityData[currentIndexForDHT].sensorName = "Sensor 1";
+    humidityData[currentIndexForDHT].sensorType = "DHT";
+    humidityData[currentIndexForDHT].sensorLocation = "Greenhouse 1";
+    humidityData[currentIndexForDHT].dataType = "Humidity";
 
+    //Sensor Data
     humidityData[currentIndexForDHT].data = humidity1;
     humidityData[currentIndexForDHT].timestamp = getCurrentTime();
 
@@ -384,8 +400,15 @@ void readAmbientTemp() {
   ambientTemp -= 273.15;                                // convert to C
 
   if (currentIndexForTemp < sensorArray_Size) {
-    deviceTempData[currentIndexForTemp].name = "Device Temperature";
 
+    //Sensor information
+    deviceTempData[currentIndexForTemp].name = "Device Temperature";
+    deviceTempData[currentIndexForTemp].sensorName = "Sensor 1";
+    deviceTempData[currentIndexForTemp].sensorType = "Internal";
+    deviceTempData[currentIndexForTemp].sensorLocation = "Default";
+    deviceTempData[currentIndexForTemp].dataType = "Temperature";
+
+    //Sensor Data
     deviceTempData[currentIndexForTemp].data = ambientTemp;
     deviceTempData[currentIndexForTemp].timestamp = getCurrentTime();
     currentIndexForTemp++;
@@ -410,7 +433,12 @@ void readWaterTemps() {
   waterTemp = data;
 
   if (currentIndexForWaterTemp < sensorArray_Size) {
+    //Sensor Information
     waterTempData[currentIndexForWaterTemp].name = "Water Temperature";
+    waterTempData[currentIndexForWaterTemp].sensorName = "Sensor 1";
+    waterTempData[currentIndexForWaterTemp].sensorType = "ds18b20";
+    waterTempData[currentIndexForWaterTemp].sensorLocation = "Greenhouse 1";
+    waterTempData[currentIndexForWaterTemp].dataType = "Temperature";
 
     waterTempData[currentIndexForWaterTemp].data = waterTemp;
     waterTempData[currentIndexForWaterTemp].timestamp = getCurrentTime();
@@ -589,8 +617,8 @@ void makeGetRequest(const char* serverRoute) {
 
   // Wait for a response with a timeout
   unsigned long startTime = millis();
-  while(!client.available()) {
-    if(millis() - startTime > 5000) { // 5 second timeout
+  while (!client.available()) {
+    if (millis() - startTime > 5000) {  // 5 second timeout
       Serial.println("Server Response Timeout");
       return;
     }
@@ -618,7 +646,7 @@ String convertToJSON() {
   for (int i = 0; i < sensorArray_Size; i++) {
 
     //Check if the iteration has no data
-    if (tempData[i].data != 0 || humidityData[i].data != 0 || deviceTempData[i].data != 0 || waterTempData[i].data != 0) {
+    if (deviceTempData[i].data != 0 || tempData[i].data != 0 || humidityData[i].data != 0 || waterTempData[i].data != 0) {
 
       //If there not all 0 then create an object to store this iterations data
       JsonObject sensorDataObject = Data.createNestedObject();
@@ -628,33 +656,10 @@ String convertToJSON() {
 
       JsonArray SensorReadings = sensorDataObject.createNestedArray("SensorReadings");
 
-      if (deviceTempData[i].data != 0) {
-        JsonObject deviceTempReading = SensorReadings.createNestedObject();
-        deviceTempReading["Name"] = deviceTempData[i].name;
-        deviceTempReading["Value"] = deviceTempData[i].data;
-        deviceTempReading["Time"] = deviceTempData[i].timestamp;
-      }
-
-      if (tempData[i].data != 0) {
-        JsonObject tempReading = SensorReadings.createNestedObject();
-        tempReading["Name"] = tempData[i].name;
-        tempReading["Value"] = tempData[i].data;
-        tempReading["Time"] = tempData[i].timestamp;
-      }
-
-      if (humidityData[i].data != 0) {
-        JsonObject humidityReading = SensorReadings.createNestedObject();
-        humidityReading["Name"] = humidityData[i].name;
-        humidityReading["Value"] = humidityData[i].data;
-        humidityReading["Time"] = humidityData[i].timestamp;
-      }
-
-      if (waterTempData[i].data != 0) {
-        JsonObject waterTempReading = SensorReadings.createNestedObject();
-        waterTempReading["Name"] = waterTempData[i].name;
-        waterTempReading["Value"] = waterTempData[i].data;
-        waterTempReading["Time"] = waterTempData[i].timestamp;
-      }
+      addSensorReading(SensorReadings, deviceTempData[i]);
+      addSensorReading(SensorReadings, tempData[i]);
+      addSensorReading(SensorReadings, humidityData[i]);
+      addSensorReading(SensorReadings, waterTempData[i]);
     }
   }
   // Convert the JSON document to a string
@@ -664,6 +669,31 @@ String convertToJSON() {
   return postData;
 }
 
+void addSensorReading(JsonArray& SensorReadings, sensorData sensor) {
+    //If there is Data
+  if (sensor.data != 0) {
+    JsonObject reading = SensorReadings.createNestedObject();
+
+
+
+    reading["Name"] = sensor.name;
+    reading["Value"] = sensor.data;
+    reading["Time"] = sensor.timestamp;
+
+    if (!sensor.sensorName.isEmpty()) {
+      reading["Sensor"] = sensor.sensorName;
+    }
+    if (!sensor.sensorType.isEmpty()) {
+      reading["Type"] = sensor.sensorType;
+    }
+    if (!sensor.dataType.isEmpty()) {
+      reading["Field"] = sensor.dataType;
+    }
+    if (!sensor.sensorLocation.isEmpty()) {
+      reading["Location"] = sensor.sensorLocation;
+    }
+  }
+}
 
 
 void postSensorData(const char* serverRoute) {
@@ -682,8 +712,6 @@ void postSensorData(const char* serverRoute) {
     Serial.println("Failed to send Data");
     return;
   }
-
-  Serial.println(postData);
 
   client.sendHeader("Content-Type", contentType);
   client.sendHeader("Content-Length", postData.length());
