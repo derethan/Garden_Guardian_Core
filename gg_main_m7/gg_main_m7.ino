@@ -163,7 +163,6 @@ void setup() {
   //Initilaize DHT Sensors
   dht1.begin();
   dht2.begin();
-  sensor.requestTemp();
 
   // Initialize the rotary encoder pins
   initEncoder();
@@ -311,6 +310,8 @@ void debugInfo() {
   Serial.println(temperature1);
   Serial.print("DHT Humidity Sensor 1: ");
   Serial.println(humidity1);
+   Serial.print("Water Temperature Sensor 1: ");
+  Serial.println(waterTemp);
 
   int relayStatus = digitalRead(HEATER_RELAY_PIN);
 
@@ -422,6 +423,7 @@ sensorData waterTempData[sensorArray_Size];
 int currentIndexForWaterTemp = 0;
 
 void readWaterTemps() {
+  sensor.requestTemp();
 
   if (!sensor.readTemp()) {
     waterTemp = 0;
@@ -429,7 +431,7 @@ void readWaterTemps() {
   }
 
   //Read the Sensor
-  int data = sensor.getTemp();
+  float data = sensor.getTemp();
   waterTemp = data;
 
   if (currentIndexForWaterTemp < sensorArray_Size) {
