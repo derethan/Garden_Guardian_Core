@@ -126,7 +126,7 @@ const long interval = 30000;  //1000 per second
 
 //Track time for sending Sensor data to server
 unsigned long sendDataPreviousMillis = 0;
-const long sendDataInterval = 60000;  //1000 per second
+const long sendDataInterval = 30000;  //1000 per second
 
 //Track time for sending pings to the server (Used to track device status)
 unsigned long sendPingPreviousMillis = 0;
@@ -359,7 +359,7 @@ void readDHT() {
     tempData[currentIndexForDHT].timestamp = getCurrentTime();
 
     //Sensor Information
-    humidityData[currentIndexForDHT].name = "Temperature Sensor";
+    humidityData[currentIndexForDHT].name = "Humidity Sensor";
     humidityData[currentIndexForDHT].sensorName = "Sensor 1";
     humidityData[currentIndexForDHT].sensorType = "DHT";
     humidityData[currentIndexForDHT].sensorLocation = "Greenhouse 1";
@@ -453,7 +453,7 @@ void readWaterTemps() {
 // Reset the Sensor Array values to 0
 void resetSensorArray() {
 
-  int currentIndexForDHT = 0;
+  currentIndexForDHT = 0;
   currentIndexForTemp = 0;
   currentIndexForWaterTemp = 0;
 
@@ -675,8 +675,6 @@ void addSensorReading(JsonArray& SensorReadings, sensorData sensor) {
     //If there is Data
   if (sensor.data != 0) {
     JsonObject reading = SensorReadings.createNestedObject();
-
-
 
     reading["Name"] = sensor.name;
     reading["Value"] = sensor.data;
