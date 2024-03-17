@@ -9,6 +9,7 @@
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
+//Converts the unix Timestamp into a readable format.
 String convertTimeStamp(unsigned long timestamp) {
   // Convert timestamp to time_t
   time_t rawtime = (time_t)timestamp;
@@ -29,8 +30,19 @@ String convertTimeStamp(unsigned long timestamp) {
   return String(dateTimeString);
 }
 
+// Returns the current time as a Unix Timestamp For the Influx Database
+unsigned long getCurrentTime() {
 
-String getCurrentTime() {
+  timeClient.update();
+  unsigned long timestamp = timeClient.getEpochTime();
+
+  String convertedTimeString = convertTimeStamp(timestamp);
+
+  return timestamp;
+}
+
+//Returns the Current Date and Time as a Readable format YY:MM:DD HH:MM:SS
+String getCurrentReadableTime() {
 
   timeClient.update();
   unsigned long timestamp = timeClient.getEpochTime();
