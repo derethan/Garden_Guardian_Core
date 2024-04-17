@@ -33,10 +33,15 @@ String convertTimeStamp(unsigned long timestamp) {
 // Returns the current time as a Unix Timestamp For the Influx Database
 unsigned long getCurrentTime() {
 
+
+//Added to test if it stops hang on no internet connection
+if (!timeClient.update ()){
+  return 0;
+}
   timeClient.update();
   unsigned long timestamp = timeClient.getEpochTime();
 
-  String convertedTimeString = convertTimeStamp(timestamp);
+  // String convertedTimeString = convertTimeStamp(timestamp);
 
   return timestamp;
 }

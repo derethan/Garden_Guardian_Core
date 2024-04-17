@@ -146,6 +146,9 @@ struct sensorData {
   float data;
 };
 
+// pH Sensor Module + pH Electrode Probe BNC
+int analogPin = A1;  // Analog input pin for pH sensor
+float phValue;       // Variable to store pH value
 
 /*****************************************
 *   SETUP FUNCTION
@@ -199,6 +202,7 @@ void loop() {
     readDHT();
     readAmbientTemp();
     readWaterTemps();
+    readPH();
 
     setRelay1(HEATER_RELAY_PIN, temperature1, targetTemperature);
 
@@ -310,8 +314,10 @@ void debugInfo() {
   Serial.println(temperature1);
   Serial.print("DHT Humidity Sensor 1: ");
   Serial.println(humidity1);
-   Serial.print("Water Temperature Sensor 1: ");
+  Serial.print("Water Temperature Sensor 1: ");
   Serial.println(waterTemp);
+  Serial.print("pH: ");
+  Serial.println(phValue, 2);  // Print the pH value with two decimal places
 
   int relayStatus = digitalRead(HEATER_RELAY_PIN);
 
@@ -326,6 +332,7 @@ void debugInfo() {
 /*************************************************
 *       Sensor Reading Functions Below
 ************************************************/
+
 const int sensorArray_Size = 100;
 
 //Read the Temperature and Humidity
@@ -450,18 +457,53 @@ void readWaterTemps() {
   }
 }
 
+//Ready the PH Sensor
+sensorData phData[sensorArray_Size];
+int currentIndexForPH = 0;
+
+void readPH() {
+
+  //Default to PH 0 If sensor is not connected - Values of 0 are excluded from JSON Document
+  if (!analogRead(analogPin)) {
+    phValue = 0;
+    return;
+  }
+
+  //Read The Sensor
+  phValue = analogRead(analogPin);         // Read the analog value from sensor
+  phValue = 3.5 * (phValue * 5.0 / 1024);  // Convert the analog value to pH value
+
+    if (currentIndexForPH < sensorArray_Size) {
+    //Sensor Information
+    phData[currentIndexForPH].name = "PH";
+    phData[currentIndexForPH].sensorName = "Sensor 1";
+    phData[currentIndexForPH].sensorType = "BNC PH Probe";
+    phData[currentIndexForPH].sensorLocation = "Greenhouse 1";
+    phData[currentIndexForPH].dataType = "PH";
+
+    phData[currentIndexForPH].data = phValue;
+    phData[currentIndexForPH].timestamp = getCurrentTime();
+    currentIndexForPH++;
+  } else {
+    resetSensorArray();
+  }
+}
+
+
 // Reset the Sensor Array values to 0
 void resetSensorArray() {
 
   currentIndexForDHT = 0;
   currentIndexForTemp = 0;
   currentIndexForWaterTemp = 0;
+  currentIndexForPH = 0;
 
   for (int i = 0; i < sensorArray_Size; i++) {
     tempData[i].data = 0;
     humidityData[i].data = 0;
     deviceTempData[i].data = 0;
     waterTempData[i].data = 0;
+    phData[i].data = 0;
   }
 }
 
@@ -648,7 +690,7 @@ String convertToJSON() {
   for (int i = 0; i < sensorArray_Size; i++) {
 
     //Check if the iteration has no data
-    if (deviceTempData[i].data != 0 || tempData[i].data != 0 || humidityData[i].data != 0 || waterTempData[i].data != 0) {
+    if (deviceTempData[i].data != 0 || tempData[i].data != 0 || humidityData[i].data != 0 || waterTempData[i].data != 0 || phData[i].data != 0) {
 
       //If there not all 0 then create an object to store this iterations data
       JsonObject sensorDataObject = Data.createNestedObject();
@@ -662,6 +704,7 @@ String convertToJSON() {
       addSensorReading(SensorReadings, tempData[i]);
       addSensorReading(SensorReadings, humidityData[i]);
       addSensorReading(SensorReadings, waterTempData[i]);
+      addSensorReading(SensorReadings, phData[i]);
     }
   }
   // Convert the JSON document to a string
@@ -672,7 +715,7 @@ String convertToJSON() {
 }
 
 void addSensorReading(JsonArray& SensorReadings, sensorData sensor) {
-    //If there is Data
+  //If there is Data
   if (sensor.data != 0) {
     JsonObject reading = SensorReadings.createNestedObject();
 
