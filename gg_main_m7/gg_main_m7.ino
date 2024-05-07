@@ -34,6 +34,7 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);  // I2C address 0x27
 #include "relay_control.h"
 #include "buzzer_functions.h"
 #include "getTime.h"
+// #include "tdsFunctions.h"
 
 /*****************************************
 *   Communications for WIFI and Server
@@ -66,6 +67,10 @@ HttpClient client(wifi, serverAddress, serverPort);
 #define DHTTYPE DHT11
 DHT dht1(DHTPIN1, DHTTYPE);
 DHT dht2(DHTPIN2, DHTTYPE);
+
+#define TdsSensorPin A5
+#define VREF 5.0   // analog reference voltage(Volt) of the ADC
+#define SCOUNT 30  // sum of sample point
 
 //Defined Water Temp Pins
 MicroDS18B20<3> sensor;
@@ -146,6 +151,16 @@ struct sensorData {
   float data;
 };
 
+// pH Sensor Module + pH Electrode Probe BNC
+int analogPin = A1;  // Analog input pin for pH sensor
+float phValue;       // Variable to store pH value
+
+
+int analogBuffer[SCOUNT];  // store the analog value in the array, read from ADC
+int analogBufferTemp[SCOUNT];
+int analogBufferIndex = 0, copyIndex = 0;
+float averageVoltage = 0, tdsValue = 0, temperature = 25;
+
 
 /*****************************************
 *   SETUP FUNCTION
@@ -153,16 +168,22 @@ struct sensorData {
 void setup() {
   Serial.begin(9600);
 
-  //Get ID's
+  //set/get ID's
   device_id = "GG-001";
 
+  //Initialize Heater Pin and Relay Pin
   pinMode(HEATER_RELAY_PIN, OUTPUT);    // Set pinMode for the Heater Relay Pin
   digitalWrite(HEATER_RELAY_PIN, LOW);  // Initially, turn the relay off
+
+  //initialize Buzzer Pin
   pinMode(BUZZER_PIN, OUTPUT);
 
   //Initilaize DHT Sensors
   dht1.begin();
   dht2.begin();
+
+  //Initialize the TDS Pin
+  pinMode(TdsSensorPin, INPUT);
 
   // Initialize the rotary encoder pins
   initEncoder();
@@ -199,6 +220,8 @@ void loop() {
     readDHT();
     readAmbientTemp();
     readWaterTemps();
+    readPH();
+    readTDS();
 
     setRelay1(HEATER_RELAY_PIN, temperature1, targetTemperature);
 
@@ -296,7 +319,11 @@ void loop() {
   }
 
   delay(500);
+
+  getTDSReading();
 }
+
+
 
 /*************************************************
 *       Debug and Com Message Functions Below
@@ -310,8 +337,14 @@ void debugInfo() {
   Serial.println(temperature1);
   Serial.print("DHT Humidity Sensor 1: ");
   Serial.println(humidity1);
-   Serial.print("Water Temperature Sensor 1: ");
+  Serial.print("Water Temperature Sensor 1: ");
   Serial.println(waterTemp);
+  Serial.print("pH: ");
+  Serial.println(phValue, 2);  // Print the pH value with two decimal places
+  Serial.print("TDS Value:");
+  Serial.print(tdsValue, 0);
+  Serial.println("ppm");
+
 
   int relayStatus = digitalRead(HEATER_RELAY_PIN);
 
@@ -326,12 +359,12 @@ void debugInfo() {
 /*************************************************
 *       Sensor Reading Functions Below
 ************************************************/
+
 const int sensorArray_Size = 100;
 
 //Read the Temperature and Humidity
 sensorData tempData[sensorArray_Size];
 sensorData humidityData[sensorArray_Size];
-// if errors with temp might need to change from INT
 int currentIndexForDHT = 0;
 
 void readDHT() {
@@ -387,6 +420,7 @@ void readAmbientTemp() {
     return;
   }
 
+//Read the Analog Signal and convert it to Readable Temperate
   float ADCvalue;
   float Resistance;
 
@@ -450,20 +484,89 @@ void readWaterTemps() {
   }
 }
 
+//Read the PH Sensor
+sensorData phData[sensorArray_Size];
+int currentIndexForPH = 0;
+
+void readPH() {
+
+  //Default to PH 0 If sensor is not connected - Values of 0 are excluded from JSON Document
+  if (!analogRead(analogPin)) {
+    phValue = 0;
+    return;
+  }
+
+  //Read The Sensor
+  phValue = analogRead(analogPin);         // Read the analog value from sensor
+  phValue = 3.5 * (phValue * 5.0 / 1024);  // Convert the analog value to pH value
+
+  //Temporry disable for PH Sensor Recordings
+  phValue = 0;
+
+  if (currentIndexForPH < sensorArray_Size) {
+    //Sensor Information
+    phData[currentIndexForPH].name = "PH";
+    phData[currentIndexForPH].sensorName = "PH Sensor 1";
+    phData[currentIndexForPH].sensorType = "BNC PH Probe";
+    phData[currentIndexForPH].sensorLocation = "Greenhouse 1";
+    phData[currentIndexForPH].dataType = "PH";
+
+    phData[currentIndexForPH].data = phValue;
+    phData[currentIndexForPH].timestamp = getCurrentTime();
+    currentIndexForPH++;
+  } else {
+    resetSensorArray();
+  }
+}
+
+
+//Read the TDS
+sensorData tdsData[sensorArray_Size];
+int currentIndexForTDS = 0;
+
+void readTDS() {
+
+  // If there is no reading Do nothing (If no sensor, or when initializing ignore data)
+  if (tdsValue == 0) { return; }
+
+  if (currentIndexForTDS < sensorArray_Size) {
+
+    //Sensor Information
+    tdsData[currentIndexForTDS].name = "TDS";
+    tdsData[currentIndexForTDS].sensorName = "TDS Sensor 1";
+    tdsData[currentIndexForTDS].sensorType = "TDS";
+    tdsData[currentIndexForTDS].sensorLocation = "Greenhouse 1";
+    tdsData[currentIndexForTDS].dataType = "PPM";
+
+    //Sensor Data
+    tdsData[currentIndexForTDS].data = tdsValue;
+    tdsData[currentIndexForTDS].timestamp = getCurrentTime();
+    currentIndexForTDS++;
+
+  } else {
+    resetSensorArray();
+  }
+}
+
 // Reset the Sensor Array values to 0
 void resetSensorArray() {
 
   currentIndexForDHT = 0;
   currentIndexForTemp = 0;
   currentIndexForWaterTemp = 0;
+  currentIndexForPH = 0;
+  currentIndexForTDS = 0;
 
   for (int i = 0; i < sensorArray_Size; i++) {
     tempData[i].data = 0;
     humidityData[i].data = 0;
     deviceTempData[i].data = 0;
     waterTempData[i].data = 0;
+    phData[i].data = 0;
+    tdsData[i].data = 0;
   }
 }
+
 
 /*****************************************
 *   Rotary Encoder functions
@@ -648,7 +751,7 @@ String convertToJSON() {
   for (int i = 0; i < sensorArray_Size; i++) {
 
     //Check if the iteration has no data
-    if (deviceTempData[i].data != 0 || tempData[i].data != 0 || humidityData[i].data != 0 || waterTempData[i].data != 0) {
+    if (deviceTempData[i].data != 0 || tempData[i].data != 0 || humidityData[i].data != 0 || waterTempData[i].data != 0 || phData[i].data != 0 ||tdsData[i].data != 0) {
 
       //If there not all 0 then create an object to store this iterations data
       JsonObject sensorDataObject = Data.createNestedObject();
@@ -662,6 +765,8 @@ String convertToJSON() {
       addSensorReading(SensorReadings, tempData[i]);
       addSensorReading(SensorReadings, humidityData[i]);
       addSensorReading(SensorReadings, waterTempData[i]);
+      addSensorReading(SensorReadings, phData[i]);
+      addSensorReading(SensorReadings, tdsData[i]);
     }
   }
   // Convert the JSON document to a string
@@ -672,7 +777,7 @@ String convertToJSON() {
 }
 
 void addSensorReading(JsonArray& SensorReadings, sensorData sensor) {
-    //If there is Data
+  //If there is Data
   if (sensor.data != 0) {
     JsonObject reading = SensorReadings.createNestedObject();
 
@@ -734,4 +839,55 @@ void postSensorData(const char* serverRoute) {
   } else {
     Serial.println("HTTP Request failed");
   }
+}
+
+/*****************************************
+*   Functions to Store the TDS Readings
+*****************************************/
+float getTDSReading() {
+
+  static unsigned long analogSampleTimepoint = millis();
+  if (millis() - analogSampleTimepoint > 40U)  //every 40 milliseconds,read the analog value from the ADC
+  {
+    analogSampleTimepoint = millis();
+    analogBuffer[analogBufferIndex] = analogRead(TdsSensorPin);  //read the analog value and store into the buffer
+    analogBufferIndex++;
+    if (analogBufferIndex == SCOUNT)
+      analogBufferIndex = 0;
+  }
+
+
+  //every 800 ms read the tds from buffer, convert to readable value
+  static unsigned long printTimepoint = millis();
+  if (millis() - printTimepoint > 800U) {
+
+    printTimepoint = millis();
+    for (copyIndex = 0; copyIndex < SCOUNT; copyIndex++)
+      analogBufferTemp[copyIndex] = analogBuffer[copyIndex];
+    averageVoltage = getMedianNum(analogBufferTemp, SCOUNT) * (float)VREF / 1024.0;                                                                                                   // read the analog value more stable by the median filtering algorithm, and convert to voltage value
+    float compensationCoefficient = 1.0 + 0.02 * (temperature - 25.0);                                                                                                                //temperature compensation formula: fFinalResult(25^C) = fFinalResult(current)/(1.0+0.02*(fTP-25.0));
+    float compensationVolatge = averageVoltage / compensationCoefficient;                                                                                                             //temperature compensation
+    tdsValue = (133.42 * compensationVolatge * compensationVolatge * compensationVolatge - 255.86 * compensationVolatge * compensationVolatge + 857.39 * compensationVolatge) * 0.5;  //convert voltage value to tds value
+  }
+}
+
+int getMedianNum(int bArray[], int iFilterLen) {
+  int bTab[iFilterLen];
+  for (byte i = 0; i < iFilterLen; i++)
+    bTab[i] = bArray[i];
+  int i, j, bTemp;
+  for (j = 0; j < iFilterLen - 1; j++) {
+    for (i = 0; i < iFilterLen - j - 1; i++) {
+      if (bTab[i] > bTab[i + 1]) {
+        bTemp = bTab[i];
+        bTab[i] = bTab[i + 1];
+        bTab[i + 1] = bTemp;
+      }
+    }
+  }
+  if ((iFilterLen & 1) > 0)
+    bTemp = bTab[(iFilterLen - 1) / 2];
+  else
+    bTemp = (bTab[iFilterLen / 2] + bTab[iFilterLen / 2 - 1]) / 2;
+  return bTemp;
 }

@@ -4,10 +4,8 @@
             "name": "Win32",
             "includePath": [
                 "${workspaceFolder}/**",
-                "C:/Users/andg_/AppData/Local/Arduino15/packages/arduino/hardware/mbed_giga/4.0.10/**",
                 "C:/Users/andg_/Documents/www/Arduino/libraries/**",
-                "C:/Users/andg_/AppData/Local/Arduino15/packages/arduino/hardware/avr/1.8.6/**",
-                "C:/Users/andg_/AppData/Local/Arduino15/packages/arduino/hardware/mbed_giga/4.0.10/cores/arduino/"
+                "C:/Users/andg_/AppData/Local/Arduino15/packages/arduino/hardware/avr/1.8.6/**"
                 ],
             "defines": [
                 "_DEBUG",
