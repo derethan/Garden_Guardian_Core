@@ -2,6 +2,6 @@
     "port": "COM4",
     "configuration": "target_core=cm7,split=100_0",
     "board": "arduino:mbed_giga:giga",
-    "programmer": "cmsis-dap",
+    "programmer": "stlink",
     "sketch": "gg_main_m7\\gg_main_m7.ino"
 }
