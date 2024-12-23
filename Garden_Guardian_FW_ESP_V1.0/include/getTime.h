@@ -10,6 +10,7 @@ public:
     String getCurrentTime();
     String getCurrentDate();
     String getTimestamp();
+    unsigned long getUnixTime();
 
 private:
     // Add any private members if needed

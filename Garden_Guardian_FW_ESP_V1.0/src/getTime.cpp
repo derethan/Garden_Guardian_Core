@@ -7,7 +7,7 @@
 #include "getTime.h"
 
 const char *ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = 0;        // Adjust for your timezone (e.g., -18000 for EST)
+const long gmtOffset_sec = -12600;        // Adjust for your timezone (e.g., -18000 for EST)
 const int daylightOffset_sec = 3600; // Daylight savings time offset
 
 TimeRetriever::TimeRetriever()
@@ -28,24 +28,59 @@ void TimeRetriever::initialize()
     return;
   }
   Serial.println("Time synchronized");
+
+  // print formatted timeinfo to serial monitor
+  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
 }
 
 String TimeRetriever::getCurrentTime()
 {
-  // Code to retrieve the current time
-  return "12:34:56"; // Placeholder implementation
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Failed to obtain time");
+    return "00:00:00"; // Placeholder implementation
+  }
+
+  char timeString[9];
+  strftime(timeString, 9, "%H:%M:%S", &timeinfo);
+
+  return String(timeString);
 }
 
 String TimeRetriever::getCurrentDate()
 {
-  // Code to retrieve the current date
-  return "2023-10-01"; // Placeholder implementation
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Failed to obtain time");
+    return "00:00:00"; // Placeholder implementation
+  }
+
+  char dateString[11];
+  strftime(dateString, 11, "%Y-%m-%d", &timeinfo);
+
+  return String(dateString);
 }
 
 String TimeRetriever::getTimestamp()
 {
   // Code to retrieve the current timestamp
   return getCurrentDate() + " " + getCurrentTime();
+}
+
+// function to return the unix timestamp
+unsigned long TimeRetriever::getUnixTime()
+{
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    Serial.println("Failed to obtain time");
+    return 0; // Placeholder implementation
+  }
+
+  time_t time = mktime(&timeinfo);
+  return (unsigned long)time;
 }
 
 // #include <NTPClient.h>

@@ -5,25 +5,40 @@
 #include <Arduino.h>
 #include "definitions.h"
 
+// wifi for esp32
+#include <WiFi.h>
+
 // Sensitive Data
 #include "secrets.h"
 
 // import Directory Files
 #include "relayControl.h"
+#include "wifiControl.h"
+#include "getTime.h"
 
-/*****************************************
+/*****************************************\
  *  Initialize Modules and Variables
- *****************************************/
-RelayControl relay1(RELAY_PIN_1, 5.0);
-RelayControl relay2(RELAY_PIN_2, 5.0);
-RelayControl relay3(RELAY_PIN_3, 5.0);
-RelayControl relay4(RELAY_PIN_4, 5.0);
+\*****************************************/
+RelayControl relay1(RELAY_PIN_LIGHTS);
+RelayControl relay2(RELAY_PIN_HEATER_WATER_1, 5.0);
+RelayControl relay3(RELAY_PIN_HEATER_ROOM, 5.0);
+RelayControl relay4(RELAY_PIN_PUMP_WATER_1);
 RelayControl relays[] = {relay1, relay2, relay3, relay4};
+
+WifiControl wifiControl(SECRET_SSID, SECRET_PASS);
+TimeRetriever timeRetriever;
+
+// Timer variables
+unsigned long previousMillis = 0;
+const long interval = 15000; // 1 minute
 
 // Setup function
 void setup()
 {
   Serial.begin(115200);
+
+    // Delay 5 sec for startup messages
+  delay(5000);
 
   // Initialize The Relays
   for (RelayControl &relay : relays)
@@ -31,61 +46,37 @@ void setup()
     relay.initialize();
   }
 
-  // Delay 5 sec for startup messages
-  delay(5000);
+  // Connect to Wi-Fi
+  wifiControl.connect();
 
-  // Print relay messages
-  Serial.println("Enter On to turn on the relay, or Off to turn off the relay");
-  
+  // Initialize Time
+  timeRetriever.initialize();
+
 }
 
+/*****************************************\
+ *   MAIN PROGRAM LOOP
+\*****************************************/
 void loop()
 {
-  if (Serial.available())
-  {
-    String command = Serial.readStringUntil('\n');
-    command.toLowerCase();  // Convert to lowercase for easier comparison
+  unsigned long currentMillis = millis();
+  
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
 
-    // Split command into relay number and action
-    int spaceIndex = command.indexOf(' ');
-    if (spaceIndex == -1) {
-      Serial.println("Invalid command format. Use: relay[1-4] [on/off] or all [on/off]");
-      return;
-    }
+    // Light Relay
+    relay1.setRelayForSchedule(timeRetriever);
 
-    String relay = command.substring(0, spaceIndex);
-    String action = command.substring(spaceIndex + 1);
+    // Water Heater Relays
+    relay2.setRelayforTemp(20.0, 22.0); // Current/Target
 
-    if (relay == "all") {
-      for (RelayControl &relay : relays) {
-        if (action == "on") {
-          relay.turnOn();
-        } else if (action == "off") {
-          relay.turnOff();
-        }
-      }
-      Serial.println("All relays turned " + action);
-      return;
-    }
+    // Room Heater Relays
+    relay3.setRelayforTemp(20.0, 25.0); // Current/Target
 
-    int relayNum = -1;
-    if (relay == "relay1") relayNum = 0;
-    else if (relay == "relay2") relayNum = 1;
-    else if (relay == "relay3") relayNum = 2;
-    else if (relay == "relay4") relayNum = 3;
-
-    if (relayNum >= 0 && relayNum < 4) {
-      if (action == "on") {
-        relays[relayNum].turnOn();
-        Serial.println("Relay " + String(relayNum + 1) + " turned on");
-      } else if (action == "off") {
-        relays[relayNum].turnOff();
-        Serial.println("Relay " + String(relayNum + 1) + " turned off");
-      } else {
-        Serial.println("Invalid action. Use 'on' or 'off'");
-      }
-    } else {
-      Serial.println("Invalid relay number. Use relay1, relay2, relay3, relay4, or all");
-    }
+    // NFT Pump Relay
+    relay4.setRelayForTimedIntervals();
   }
+
+  // Add a delay to avoid rapid toggling
+  delay(1000);
 }

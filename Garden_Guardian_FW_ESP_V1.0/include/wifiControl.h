@@ -6,16 +6,18 @@
 #include <WiFi.h>
 // #include <WiFiClientSecure.h>
 
-
-class WifiControl {
+class WifiControl
+{
 public:
-    WifiControl(const char* ssid, const char* pass);
+    // ssl wifi client
+    WifiControl(const char *ssid, const char *pass);
     void connect();
     void printStatus();
+    void modemStatus(int status);
 
 private:
-    const char* ssid;
-    const char* pass;
+    const char *ssid;
+    const char *pass;
     int status;
 };
 

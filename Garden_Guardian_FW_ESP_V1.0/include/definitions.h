@@ -6,10 +6,10 @@
 // Add pin definitions here
 
 // Defined Relay pins
-#define RELAY_PIN_1 25
-#define RELAY_PIN_2 26
-#define RELAY_PIN_3 27
-#define RELAY_PIN_4 14
+#define RELAY_PIN_LIGHTS 25
+#define RELAY_PIN_HEATER_WATER_1 26
+#define RELAY_PIN_HEATER_ROOM 27
+#define RELAY_PIN_PUMP_WATER_1 14
 
 
 #define LightSensor_Pin 25
