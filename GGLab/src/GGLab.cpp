@@ -8,6 +8,8 @@
 
 // Include Particle Device OS APIs
 #include "Particle.h"
+// #include "Adafruit_DHT.h"
+
 
 // Let Device OS manage the connection to the Particle Cloud
 SYSTEM_MODE(AUTOMATIC);
@@ -18,6 +20,20 @@ SYSTEM_THREAD(ENABLED);
 // Show system, cloud connectivity, and application logs over USB
 // View logs with CLI using 'particle serial monitor --follow'
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
+
+
+
+// #define DHTPIN 2     // what pin we're connected to
+// #define DHTTYPE DHT11		// DHT 11 
+
+
+// DHT dht(DHTPIN, DHTTYPE);
+
+
+
+
+
+
 
 // setup() runs once, when the device is first turned on
 void setup() {

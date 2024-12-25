@@ -3,7 +3,8 @@
 #ifndef PINDEFINITIONS_H
 #define PINDEFINITIONS_H
 
-// Add pin definitions here
+#define GG_MAIN_MAC {0xCC, 0xDB, 0xA7, 0x32, 0x24, 0xFC}
+
 
 // Defined Relay pins
 #define RELAY_PIN_LIGHTS 25
