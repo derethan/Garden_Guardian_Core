@@ -62,7 +62,7 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
     else
     {
         // Check if the relay has been off for the off interval
-        if (currentTime - previousMillis >= offInterval * 60 * 1000)
+        if (currentTime - previousMillis >= offInterval * 60 * 1000 || previousMillis == 0)
         {
             // Turn on the relay
             turnOn();
