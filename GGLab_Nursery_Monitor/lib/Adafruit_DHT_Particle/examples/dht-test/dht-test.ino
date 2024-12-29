@@ -1,9 +1,10 @@
-#include "Adafruit_DHT.h"
+// This #include statement was automatically added by the Particle IDE.
+#include "Adafruit_DHT_Particle.h"
 
 // Example testing sketch for various DHT humidity/temperature sensors
 // Written by ladyada, public domain
 
-#define DHTPIN 2     // what pin we're connected to
+#define DHTPIN D2     // what pin we're connected to
 
 // Uncomment whatever type you're using!
 //#define DHTTYPE DHT11		// DHT 11 
@@ -16,17 +17,21 @@
 // Connect a 10K resistor from pin 2 (data) to pin 1 (power) of the sensor
 
 DHT dht(DHTPIN, DHTTYPE);
+int loopCount;
 
 void setup() {
 	Serial.begin(9600); 
 	Serial.println("DHTxx test!");
+	Particle.publish("state", "DHTxx test start");
 
 	dht.begin();
+	loopCount = 0;
+	delay(2000);
 }
 
 void loop() {
 // Wait a few seconds between measurements.
-	delay(2000);
+//	delay(2000);
 
 // Reading temperature or humidity takes about 250 milliseconds!
 // Sensor readings may also be up to 2 seconds 'old' (its a 
@@ -66,5 +71,14 @@ void loop() {
 	Serial.print(hi);
 	Serial.println("*C");
 	Serial.println(Time.timeStr());
+	//String timeStamp = Time.timeStr();
+	Particle.publish("readings", String::format("{\"Hum(\%)\": %4.2f, \"Temp(°C)\": %4.2f, \"DP(°C)\": %4.2f, \"HI(°C)\": %4.2f}", h, t, dp, hi));
+	delay(10000);
+	loopCount++;
+	if(loopCount >= 6){
+	  Particle.publish("state", "Going to sleep for 5 minutes");
+	  delay(1000);
+	  System.sleep(SLEEP_MODE_DEEP, 300);  
+	}
 }
 

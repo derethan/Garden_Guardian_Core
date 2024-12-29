@@ -8,7 +8,7 @@
 
 // Include Particle Device OS APIs
 #include "Particle.h"
-// #include "Adafruit_DHT.h"
+#include "Adafruit_DHT.h"
 
 
 // Let Device OS manage the connection to the Particle Cloud

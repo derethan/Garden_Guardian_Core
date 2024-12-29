@@ -2,7 +2,6 @@
 #define RELAYCONTROL_H
 
 #include <Arduino.h>
-#include "getTime.h" // Include the header for time retrieval
 class RelayControl
 {
 public:
@@ -11,18 +10,21 @@ public:
     void turnOn();
     void turnOff();
     bool isOn();
-    void setRelayForTimedIntervals();
+    void setRelayForTimedIntervals(int onInterval, int offInterval);
     void setRelayforTemp(float temperature, float targetTemperature);
     void checkRelay(RelayControl &relay, float temperature, float targetTemperature);
-    void setRelayForSchedule(TimeRetriever &timeRetriever);
+    void setRelayForSchedule(int onHour, int offHour, String currentTime);
     void setRelayForError(bool state);
     void toggleRelay();
+    void setManualOverride(bool override);
+    bool isManualOverride();
 
 private:
     uint8_t relayPin;
     float hysteresis;
     bool relayState;
     unsigned long previousMillis;
+    bool manualOverride;
 };
 
 #endif // RELAYCONTROL_H

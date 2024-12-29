@@ -1,8 +1,18 @@
 #include "relayControl.h"
 
 // Constructor
-RelayControl::RelayControl(uint8_t relayPin, float hysteresis) : relayPin(relayPin), hysteresis(hysteresis), relayState(false) {}
+RelayControl::RelayControl(uint8_t relayPin, float hysteresis)
+    : relayPin(relayPin), hysteresis(hysteresis), relayState(false), manualOverride(false) {}
 
+void RelayControl::setManualOverride(bool override)
+{
+    manualOverride = override;
+}
+
+bool RelayControl::isManualOverride()
+{
+    return manualOverride;
+}
 // Initialize the relay
 void RelayControl::initialize()
 {
@@ -28,15 +38,13 @@ bool RelayControl::isOn()
 }
 
 // Set the relay based on timed intervals, for example, every x minutes turn on for y minutes and then turn off
-void RelayControl::setRelayForTimedIntervals()
+void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
 {
-    // Define the on and off intervals
-    int onInterval = 15;  // 15 minutes
-    int offInterval = 20; // 20 minutes
+    if (manualOverride)
+        return;
 
     // Get the current time
     unsigned long currentTime = millis();
-
 
     // Check if the relay is on
     if (relayState)
@@ -68,6 +76,9 @@ void RelayControl::setRelayForTimedIntervals()
 // Set the relay based on the temperature
 void RelayControl::setRelayforTemp(float temperature, float targetTemperature)
 {
+    if (manualOverride)
+        return;
+
     if (relayState)
     {
         if (temperature >= targetTemperature)
@@ -85,14 +96,12 @@ void RelayControl::setRelayforTemp(float temperature, float targetTemperature)
 }
 
 // Set the relay based on the schedule
-void RelayControl::setRelayForSchedule(TimeRetriever &timeRetriever)
+void RelayControl::setRelayForSchedule(int onHour, int offHour, String currentTime)
 {
-    String currentTime = timeRetriever.getCurrentTime();
-    int currentHour = currentTime.substring(0, 2).toInt();
+    if (manualOverride)
+        return;
 
-    // Define the on and off hours
-    int onHour = 6;   // 6 AM
-    int offHour = 18; // 6 PM
+    int currentHour = currentTime.substring(0, 2).toInt();
 
     if (currentHour >= onHour && currentHour < offHour)
     {

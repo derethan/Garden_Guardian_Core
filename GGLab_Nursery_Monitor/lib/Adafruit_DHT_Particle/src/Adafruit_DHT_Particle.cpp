@@ -5,7 +5,7 @@
  * modified for Spark Core by RussGrue
  * */
 
-#include "Adafruit_DHT.h"
+#include "Adafruit_DHT_Particle.h"
 
 DHT::DHT(uint8_t pin, uint8_t type, uint8_t count) {
 	_pin = pin;
@@ -17,7 +17,7 @@ DHT::DHT(uint8_t pin, uint8_t type, uint8_t count) {
 void DHT::begin(void) {
 // set up the pins!
 	pinMode(_pin, INPUT);
-	pinSetFast(_pin);
+	digitalWrite(_pin, HIGH);
 	_lastreadtime = 0;
 }
 
@@ -121,6 +121,7 @@ float DHT::computeDewPoint(float tempCelcius, float percentHumidity) {
 	return Td;
 }
 
+
 boolean DHT::read(void) {
 	uint8_t laststate = HIGH;
 	uint8_t counter = 0;
@@ -148,29 +149,29 @@ boolean DHT::read(void) {
 	data[0] = data[1] = data[2] = data[3] = data[4] = 0;
   
 // pull the pin high and wait 250 milliseconds
-	pinSetFast(_pin);
+	digitalWrite(_pin, HIGH);
 	delay(250);
 
 // now pull it low for ~20 milliseconds
 	pinMode(_pin, OUTPUT);
-	pinResetFast(_pin);
+	digitalWrite(_pin, LOW);
 	delay(20);
 	noInterrupts();
-	pinSetFast(_pin);
+	digitalWrite(_pin, HIGH);
 	delayMicroseconds(40);
 	pinMode(_pin, INPUT);
 
 // read in timings
 	for ( i=0; i< MAXTIMINGS; i++) {
 		counter = 0;
-		while (pinReadFast(_pin) == laststate) {
+		while (digitalRead(_pin) == laststate) {
 			counter++;
 			delayMicroseconds(1);
 			if (counter == 255) {
 				break;
 			}
 		}
-		laststate = pinReadFast(_pin);
+		laststate = digitalRead(_pin);
 
 		if (counter == 255) break;
 
@@ -182,6 +183,7 @@ boolean DHT::read(void) {
 				data[j/8] |= 1;
 			j++;
 		}
+
 	}
 
 	interrupts();

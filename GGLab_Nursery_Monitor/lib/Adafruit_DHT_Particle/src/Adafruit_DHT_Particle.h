@@ -8,7 +8,7 @@
 #ifndef DHT_H
 #define DHT_H
 
-#include "application.h"
+#include "Particle.h"
 #include "math.h"
 
 // how many timing transitions we need to keep track of. 2 * number bits + extra
