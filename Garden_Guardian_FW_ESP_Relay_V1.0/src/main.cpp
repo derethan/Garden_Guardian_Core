@@ -12,7 +12,7 @@
 #include <WiFi.h>
 
 // Sensitive Data
-#include "secrets.h"
+// #include "secrets.h"
 
 // import Directory Files
 #include "relayControl.h"
@@ -39,8 +39,8 @@ float currentHeaterTemp = 0.0;
 float targetHeaterTemp = 24.0;
 
 // Pump Variables (Minutes)
-int onInterval = 15;
-int offInterval = 30;
+int onInterval = 1;
+int offInterval = 5;
 
 // Timer variables
 unsigned long previousMillis = 0;
@@ -68,7 +68,7 @@ epsNowMessage recievedMessage;
 void parseData(epsNowMessage message)
 {
   // Check the type of message
-  if (message.type == "RELAY:light")
+  if (message.type == "relay1")
   {
 
     // Check if the manual override is set
@@ -90,12 +90,11 @@ void parseData(epsNowMessage message)
     }
 
     // Print Message
-    Serial.println("Relay Light Command received");
-    currentTime = message.timestamp;
-    onHour = message.onHour;
-    offHour = message.offHour;
+    Serial.println("Room Heater Data Received");
+    currentHeaterTemp = message.currentTemp;
+    targetHeaterTemp = message.targetTemp;
   }
-  else if (message.type = "RELAY:waterHeater")
+  else if (message.type = "relay2")
   {
     // Check if the manual override is set
     if (message.manualOverride)
@@ -120,7 +119,7 @@ void parseData(epsNowMessage message)
     currentWaterTemp = message.currentTemp;
     targetWaterTemp = message.targetTemp;
   }
-  else if (message.type = "RELAY:roomHeater")
+  else if (message.type = "relay3")
   {
     // Check if the manual override is set
     if (message.manualOverride)
@@ -141,11 +140,11 @@ void parseData(epsNowMessage message)
     }
 
     // Print Message
-    Serial.println("Room Heater Data Received");
-    currentHeaterTemp = message.currentTemp;
-    targetHeaterTemp = message.targetTemp;
+    Serial.println("Pump Data Received");
+    onInterval = message.onInterval;
+    offInterval = message.offInterval;
   }
-  else if (message.type = "RELAY:pump")
+  else if (message.type = "relay4")
   {
     // Check if the manual override is set
     if (message.manualOverride)
@@ -166,9 +165,10 @@ void parseData(epsNowMessage message)
     }
 
     // Print Message
-    Serial.println("Pump Data Received");
-    onInterval = message.onInterval;
-    offInterval = message.offInterval;
+    Serial.println("Relay Light Command received");
+    currentTime = message.timestamp;
+    onHour = message.onHour;
+    offHour = message.offHour;
   }
 }
 
@@ -218,22 +218,18 @@ void loop()
 
   // Relay Check
   unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval)
+  if (currentMillis - previousMillis >= interval || previousMillis == 0)
   {
     // Message
     Serial.println("Checking Relays");
 
-    // Light Relay
-    relay1.setRelayForSchedule(onHour, offHour, currentTime);
+    relay1.setRelayforTemp(currentWaterTemp, targetWaterTemp); // Current/Target
 
-    // Water Heater Relays
-    relay2.setRelayforTemp(currentWaterTemp, targetWaterTemp); // Current/Target
+    relay2.setRelayforTemp(currentHeaterTemp, targetHeaterTemp); // Current/Target
 
-    // Room Heater Relays
-    relay3.setRelayforTemp(currentHeaterTemp, targetHeaterTemp); // Current/Target
+    relay3.setRelayForTimedIntervals(onInterval, offInterval);
 
-    // NFT Pump Relay
-    relay4.setRelayForTimedIntervals(onInterval, offInterval);
+    relay4.setRelayForSchedule(onHour, offHour, currentTime);
 
     previousMillis = currentMillis;
   }
