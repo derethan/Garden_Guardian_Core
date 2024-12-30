@@ -67,10 +67,22 @@ epsNowMessage recievedMessage;
 
 void parseData(epsNowMessage message)
 {
+  // Debugging: Print the received message details
+  Serial.println("Received Message:");
+  Serial.print("Timestamp: "); Serial.println(message.timestamp);
+  Serial.print("Type: "); Serial.println(message.type);
+  Serial.print("On Hour: "); Serial.println(message.onHour);
+  Serial.print("Off Hour: "); Serial.println(message.offHour);
+  Serial.print("Current Temp: "); Serial.println(message.currentTemp);
+  Serial.print("Target Temp: "); Serial.println(message.targetTemp);
+  Serial.print("On Interval: "); Serial.println(message.onInterval);
+  Serial.print("Off Interval: "); Serial.println(message.offInterval);
+  Serial.print("Manual Override: "); Serial.println(message.manualOverride);
+  Serial.print("Relay State: "); Serial.println(message.relayState);
+
   // Check the type of message
   if (message.type == "relay1")
   {
-
     // Check if the manual override is set
     if (message.manualOverride)
     {
@@ -90,11 +102,11 @@ void parseData(epsNowMessage message)
     }
 
     // Print Message
-    Serial.println("Room Heater Data Received");
+    Serial.println("Relay 1 Data Processed");
     currentHeaterTemp = message.currentTemp;
     targetHeaterTemp = message.targetTemp;
   }
-  else if (message.type = "relay2")
+  else if (message.type == "relay2")
   {
     // Check if the manual override is set
     if (message.manualOverride)
@@ -115,11 +127,11 @@ void parseData(epsNowMessage message)
     }
 
     // Print Message
-    Serial.println("Water Heater Data Received");
+    Serial.println("Relay 2 Data Processed");
     currentWaterTemp = message.currentTemp;
     targetWaterTemp = message.targetTemp;
   }
-  else if (message.type = "relay3")
+  else if (message.type == "relay3")
   {
     // Check if the manual override is set
     if (message.manualOverride)
@@ -140,11 +152,11 @@ void parseData(epsNowMessage message)
     }
 
     // Print Message
-    Serial.println("Pump Data Received");
+    Serial.println("Relay 3 Data Processed");
     onInterval = message.onInterval;
     offInterval = message.offInterval;
   }
-  else if (message.type = "relay4")
+  else if (message.type == "relay4")
   {
     // Check if the manual override is set
     if (message.manualOverride)
@@ -165,7 +177,7 @@ void parseData(epsNowMessage message)
     }
 
     // Print Message
-    Serial.println("Relay Light Command received");
+    Serial.println("Relay 4 Data Processed");
     currentTime = message.timestamp;
     onHour = message.onHour;
     offHour = message.offHour;

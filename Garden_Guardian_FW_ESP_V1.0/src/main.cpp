@@ -98,6 +98,101 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
 }
 
+bool sendData(struct_message *message, uint8_t *peerAddress)
+{
+  esp_err_t result = esp_now_send(peerAddress, (uint8_t *)message, sizeof(struct_message));
+  return result == ESP_OK;
+}
+
+void listenForCommands()
+{
+  String incomingMessage = "";
+
+  while (Serial.available() > 0)
+  {
+    char incomingChar = Serial.read();
+    // Add character to message string if not newline/carriage return
+    if (incomingChar != '\n' && incomingChar != '\r')
+    {
+      incomingMessage += incomingChar;
+    }
+    delay(2); // Small delay to allow buffer to fil
+  }
+
+  // Process command if message received
+  if (incomingMessage.length() > 0)
+  {
+    Serial.print("Received command: ");
+    Serial.println(incomingMessage);
+
+    // Convert to lowercase for easier comparison
+    incomingMessage.toLowerCase();
+
+    // Command parsing
+    if (incomingMessage == "relay1 on")
+    {
+      Serial.println("Turning Relay 1 ON");
+
+      // Set values to send
+      myData.type = "relay4";
+      myData.manualOverride = true;
+      myData.relayState = true;
+
+      // Send data to the GG_Relay
+      if (sendData(&myData, broadcastAddress))
+      {
+        Serial.println("Data sent");
+      }
+      else
+      {
+        Serial.println("Data send failed");
+      }
+    }
+    else if (incomingMessage == "relay1 off")
+    {
+      Serial.println("Turning Relay 1 OFF");
+
+      // Set values to send
+      myData.type = "relay4";
+      myData.manualOverride = true;
+      myData.relayState = false;
+
+      // Send data to the GG_Relay
+      if (sendData(&myData, broadcastAddress))
+      {
+        Serial.println("Data sent");
+      }
+      else
+      {
+        Serial.println("Data send failed");
+      }
+    }
+    else if (incomingMessage == "relay1 auto")
+    {
+      // Enabling auto mode
+      Serial.println("Enabling Auto Mode");
+
+      // Set values to send
+      myData.type = "relay3";
+      myData.manualOverride = false;
+
+      // Send data to the GG_Relay
+      if (sendData(&myData, broadcastAddress))
+      {
+        Serial.println("Data sent");
+      }
+      else
+      {
+        Serial.println("Data send failed");
+      }
+    }
+    else
+    {
+      Serial.println("Unknown command");
+    }
+  }
+}
+
 void setup()
 {
   // Init Serial Monitor
@@ -132,23 +227,20 @@ void setup()
 
 void loop()
 {
-
-  // Set values to send
-  strcpy(myData.timestamp, "2021-09-01 12:00:00");
-  myData.type = "RELAY:light";
-  myData.onHour = 6;
-  myData.offHour = 18;
-
-  // Send message via ESP-NOW
-  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
-
-  if (result == ESP_OK)
-  {
-    Serial.println("Sent with success");
-  }
-  else
-  {
-    Serial.println("Error sending the data");
-  }
-  delay(15000);
+  listenForCommands();
 }
+
+// Set values to send
+// strcpy(myData.timestamp, "2021-09-01 12:00:00");
+// myData.type = "RELAY:light";
+// myData.onHour = 6;
+// myData.offHour = 18;
+
+// if (sendData(&myData))
+// {
+//   Serial.println("Data sent");
+// }
+// else
+// {
+//   Serial.println("Data send failed");
+// }
