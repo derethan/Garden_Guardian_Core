@@ -420,7 +420,7 @@ void readAmbientTemp() {
     return;
   }
 
-//Read the Analog Signal and convert it to Readable Temperate
+  //Read the Analog Signal and convert it to Readable Temperate
   float ADCvalue;
   float Resistance;
 

@@ -54,7 +54,6 @@ float getTDSReading() {
   }
 
   static unsigned long printTimepoint = millis();
-
   if (millis() - printTimepoint > 800U) {
     printTimepoint = millis();
 
