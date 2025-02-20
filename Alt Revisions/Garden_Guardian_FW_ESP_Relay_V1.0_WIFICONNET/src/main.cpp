@@ -13,27 +13,23 @@
 #include <WiFi.h>
 
 // Sensitive Data
-#include "secrets.h"
+// #include "secrets.h"
 
 // import Directory Files
 #include "relayControl.h"
 
-// Update these constants near the top of the file
-#define TIME_ZONE_OFFSET -3.5  // NST (UTC-3:30)
-bool isDST = false;  // This will be managed dynamically
-
 /*****************************************\
  *  Initialize Modules and Variables
 \*****************************************/
-RelayControl relay1(RELAY_PIN_HEATER_WATER_1, 5.0);  // Water Temperature
-RelayControl relay2(RELAY_PIN_HEATER_ROOM, 5.0);     // Room Heater
-RelayControl relay3(RELAY_PIN_PUMP_WATER_1);         // Water Pump
-RelayControl relay4(RELAY_PIN_LIGHTS);               // Lights
+RelayControl relay1(RELAY_PIN_LIGHTS);
+RelayControl relay2(RELAY_PIN_HEATER_WATER_1, 5.0);
+RelayControl relay3(RELAY_PIN_HEATER_ROOM, 5.0);
+RelayControl relay4(RELAY_PIN_PUMP_WATER_1);
 RelayControl relays[] = {relay1, relay2, relay3, relay4};
 
 // Time Variables For Light Relay
-int onHour = 18;   // 4 AM
-int offHour = 12; // 10 PM
+int onHour = 6;   // 6 AM
+int offHour = 18; // 6 PM
 String currentTime;
 
 // Temperature Variables for heater Relays
@@ -44,8 +40,8 @@ float currentHeaterTemp = 0.0;
 float targetHeaterTemp = 24.0;
 
 // Pump Variables (Minutes)
-int onInterval = 10;
-int offInterval = 15;
+int onInterval = 1;
+int offInterval = 5;
 
 // Timer variables
 unsigned long previousMillis = 0;
@@ -69,10 +65,9 @@ typedef struct epsNowMessage
 
 // Create a struct_message called myData
 epsNowMessage recievedMessage;
-void setDeviceTime(uint32_t unixTime)
-{
+void setDeviceTime(uint32_t unixTime) {
   struct timeval tv;
-  tv.tv_sec = unixTime; // Unix timestamp (seconds since Jan 1, 1970)
+  tv.tv_sec = unixTime;   // Unix timestamp (seconds since Jan 1, 1970)
   tv.tv_usec = 0;
   settimeofday(&tv, nullptr);
 }
@@ -207,6 +202,8 @@ void parseData(epsNowMessage message)
     currentTime = message.timestamp;
 
     // Set the time variables
+
+
   }
   else
   {
@@ -239,125 +236,7 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
   parseData(recievedMessage);
 }
 
-// Add these functions after the includes and before the setup():
-bool isNewfoundlandDST() {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        return false;
-    }
-
-    // DST starts second Sunday in March at 2:00 AM
-    // DST ends first Sunday in November at 2:00 AM
-
-    int month = timeinfo.tm_mon + 1; // tm_mon is 0-based
-    int day = timeinfo.tm_mday;
-    int wday = timeinfo.tm_wday; // 0 = Sunday
-    int hour = timeinfo.tm_hour;
-
-    // January, February, December are never DST
-    if (month < 3 || month > 11) {
-        return false;
-    }
-    
-    // April to October are always DST
-    if (month > 3 && month < 11) {
-        return true;
-    }
-
-    int weekOfMonth = (day - 1) / 7 + 1;
-
-    // March - DST starts on second Sunday at 2:00 AM
-    if (month == 3) {
-        // Before second Sunday
-        if (weekOfMonth < 2) return false;
-        // After second Sunday
-        if (weekOfMonth > 2) return true;
-        // On second Sunday
-        return (wday == 0 && hour >= 2) || wday > 0;
-    }
-    
-    // November - DST ends on first Sunday at 2:00 AM
-    if (month == 11) {
-        // After first Sunday
-        if (weekOfMonth > 1) return false;
-        // Before first Sunday
-        if (wday < 0) return true;
-        // On first Sunday
-        return hour < 2;
-    }
-
-    return false;
-}
-
-void updateTimeConfig() {
-    bool newDST = isNewfoundlandDST();
-    if (newDST != isDST) {
-        isDST = newDST;
-        configTime((TIME_ZONE_OFFSET * 3600), (isDST ? 3600 : 0), "pool.ntp.org");
-        Serial.print("DST status changed to: ");
-        Serial.println(isDST ? "ON" : "OFF");
-    }
-}
-
-// Replace the connectToWiFi() function with this updated version
-void connectToWiFi() {
-  Serial.println("Connecting to WiFi...");
-  WiFi.begin(SECRET_SSID, SECRET_PASS);  // WIFI_PASSWORD should be defined in secrets.h
-  delay(1000);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    
-    // Initial time configuration
-    isDST = isNewfoundlandDST();
-    configTime((TIME_ZONE_OFFSET * 3600), (isDST ? 3600 : 0), "pool.ntp.org");
-    Serial.print("Initial DST status: ");
-    Serial.println(isDST ? "ON" : "OFF");
-  } else {
-    Serial.println("\nFailed to connect to WiFi");
-  }
-}
-
-// Update the getCurrentFormattedTime() function
-String getCurrentFormattedTime() {
-  struct tm timeinfo;
-  if(!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time");
-    return "00";
-  }
-  
-  // // Add debug print
-  // Serial.print("Raw hour from system: ");
-  // Serial.println(timeinfo.tm_hour);
-  
-  char timeString[3];
-  strftime(timeString, 3, "%H", &timeinfo);
-  return String(timeString);
-}
-
-void displayRelayStatuses() {
-    Serial.println("\n=== Relay Statuses ===");
-    Serial.println("Relay 1 (Water Heater): " + relay1.getStatus() + 
-                  " [Current: " + String(currentWaterTemp) + "°C, Target: " + String(targetWaterTemp) + "°C]");
-    Serial.println("Relay 2 (Room Heater): " + relay2.getStatus() + 
-                  " [Current: " + String(currentHeaterTemp) + "°C, Target: " + String(targetHeaterTemp) + "°C]");
-    Serial.println("Relay 3 (Water Pump): " + relay3.getStatus() + 
-                  " [On: " + String(onInterval) + "min, Off: " + String(offInterval) + "min]");
-    Serial.println("Relay 4 (Lights): " + relay4.getStatus() + 
-                  " [On: " + String(onHour) + ":00, Off: " + String(offHour) + ":00]");
-    Serial.println("Current Time: " + currentTime + ":00");
-    Serial.println("==================\n");
-}
-
+// Setup function
 void setup()
 {
   Serial.begin(115200);
@@ -373,9 +252,6 @@ void setup()
   {
     relay.initialize();
   }
-
-  // Connect to WiFi first
-  connectToWiFi();
 
   // Set device as a Wi-Fi Station
   WiFi.mode(WIFI_STA);
@@ -397,10 +273,6 @@ void setup()
 
   // Once ESPNow is successfully Init, we will register for recv CB to
   esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
-
-  // Remove or comment out this line since we're now configuring time in connectToWiFi()
-  // configTime(0, 0, "pool.ntp.org");
- 
 }
 
 /*****************************************\
@@ -408,31 +280,21 @@ void setup()
 \*****************************************/
 void loop()
 {
-  static unsigned long lastDSTCheck = 0;
-  unsigned long currentMillis = millis();
-  
-  // Check DST status every hour
-  if (currentMillis - lastDSTCheck >= 3600000) {
-      updateTimeConfig();
-      lastDSTCheck = currentMillis;
-  }
-
-  // Get current time at the start of each loop
-  currentTime = getCurrentFormattedTime();
 
   // Relay Check
+  unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= interval || previousMillis == 0)
   {
     // Message
     Serial.println("Checking Relays");
 
-    relay1.setRelayforTemp(currentWaterTemp, targetWaterTemp);    // Water Temperature
-    relay2.setRelayforTemp(currentHeaterTemp, targetHeaterTemp);  // Room Temperature
-    relay3.setRelayForTimedIntervals(onInterval, offInterval);    // Water Pump
-    relay4.setRelayForSchedule(onHour, offHour, currentTime);     // Lights
+    relay1.setRelayforTemp(currentWaterTemp, targetWaterTemp); // Current/Target
 
-    // Display relay statuses
-    displayRelayStatuses();
+    relay2.setRelayforTemp(currentHeaterTemp, targetHeaterTemp); // Current/Target
+
+    relay3.setRelayForTimedIntervals(onInterval, offInterval);
+
+    relay4.setRelayForSchedule(onHour, offHour, currentTime);
 
     previousMillis = currentMillis;
   }

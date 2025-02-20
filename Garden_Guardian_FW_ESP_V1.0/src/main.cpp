@@ -1,109 +1,30 @@
-// /*****************************************
-//  *  Imported Libraries and files
-//  *****************************************/
-// // Arduino Libraries
-// #include <Arduino.h>
-// #include "definitions.h"
+#include "wifiControl.h"
+#include "getTime.h"
+#include "controller.h" // Include the new controller header
 
-// // wifi for esp32
-// #include <WiFi.h>
+WifiControl wifiCon;   // Create an instance of the WifiControl class
+Controller controller; // Create an instance of the Controller class
 
-// // Sensitive Data
-// #include "secrets.h"
+const char *ssid = "BATECH_Camera"; // Replace with your SSID
+const char *pass = "Norton66";      // Replace with your password
+int wifiChannel = 0;
 
-// // import Directory Files
-// #include "wifiControl.h"
-// #include "getTime.h"
-
-// /*****************************************\
-//  *  Initialize Modules and Variables
-// \*****************************************/
-
-// WifiControl wifiControl(SECRET_SSID, SECRET_PASS);
-// TimeRetriever timeRetriever;
-
-// // Timer variables
-// unsigned long previousMillis = 0;
-// const long interval = 15000; // 1 minute
-
-// // Setup function
-// void setup()
-// {
-//   Serial.begin(115200);
-
-//   // Delay 5 sec for startup messages
-//   delay(5000);
-
-//   // Connect to Wi-Fi
-//   // wifiControl.connect();
-
-//   // Initialize Time
-//   timeRetriever.initialize();
-
-//   // ESP Now
-//   wifiControl.espConnect();
-// }
-
-// /*****************************************\
-//  *   MAIN PROGRAM LOOP
-// \*****************************************/
-// void loop()
-// {
-//   // Get the Mac Address of the ESP32
-//   // String macAddress = wifiControl.getMacAddress();
-//   // Serial.println(macAddress);
-
-//   // Relay Check
-//   unsigned long currentMillis = millis();
-//   if (currentMillis - previousMillis >= interval)
-//   {
-//     previousMillis = currentMillis;
-//   }
-
-//   // Add a delay to avoid rapid toggling
-//   delay(1000);
-// }
-
-#include <esp_now.h>
-#include <WiFi.h>
-
-// uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-uint8_t broadcastAddress[] = {0xCC, 0xDB, 0xA7, 0x32, 0x07, 0xBC};
-
-// Must match the receiver structure
-typedef struct struct_message
+int32_t getWiFiChannel(const char *ssid)
 {
-  char timestamp[32];
-  String type;
-  int onHour;
-  int offHour;
-  float currentTemp;
-  float targetTemp;
-  int onInterval;
-  int offInterval;
-  bool manualOverride;
-  bool relayState;
-
-} struct_message;
-
-// Create a struct_message called myData
-struct_message myData;
-
-esp_now_peer_info_t peerInfo;
-
-// callback when data is sent
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status)
-{
-  Serial.print("\r\nLast Packet Send Status:\t");
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+  if (int32_t n = WiFi.scanNetworks())
+  {
+    for (uint8_t i = 0; i < n; i++)
+    {
+      if (!strcmp(ssid, WiFi.SSID(i).c_str()))
+      {
+        return WiFi.channel(i);
+      }
+    }
+  }
+  return 0;
 }
 
-bool sendData(struct_message *message, uint8_t *peerAddress)
-{
-  esp_err_t result = esp_now_send(peerAddress, (uint8_t *)message, sizeof(struct_message));
-  return result == ESP_OK;
-}
-
+// Serial monitor command listener
 void listenForCommands()
 {
   String incomingMessage = "";
@@ -122,74 +43,7 @@ void listenForCommands()
   // Process command if message received
   if (incomingMessage.length() > 0)
   {
-    Serial.print("Received command: ");
-    Serial.println(incomingMessage);
-
-    // Convert to lowercase for easier comparison
-    incomingMessage.toLowerCase();
-
-    // Command parsing
-    if (incomingMessage == "relay1 on")
-    {
-      Serial.println("Turning Relay 1 ON");
-
-      // Set values to send
-      myData.type = "relay4";
-      myData.manualOverride = true;
-      myData.relayState = true;
-
-      // Send data to the GG_Relay
-      if (sendData(&myData, broadcastAddress))
-      {
-        Serial.println("Data sent");
-      }
-      else
-      {
-        Serial.println("Data send failed");
-      }
-    }
-    else if (incomingMessage == "relay1 off")
-    {
-      Serial.println("Turning Relay 1 OFF");
-
-      // Set values to send
-      myData.type = "relay4";
-      myData.manualOverride = true;
-      myData.relayState = false;
-
-      // Send data to the GG_Relay
-      if (sendData(&myData, broadcastAddress))
-      {
-        Serial.println("Data sent");
-      }
-      else
-      {
-        Serial.println("Data send failed");
-      }
-    }
-    else if (incomingMessage == "relay1 auto")
-    {
-      // Enabling auto mode
-      Serial.println("Enabling Auto Mode");
-
-      // Set values to send
-      myData.type = "relay3";
-      myData.manualOverride = false;
-
-      // Send data to the GG_Relay
-      if (sendData(&myData, broadcastAddress))
-      {
-        Serial.println("Data sent");
-      }
-      else
-      {
-        Serial.println("Data send failed");
-      }
-    }
-    else
-    {
-      Serial.println("Unknown command");
-    }
+    controller.processCommand(incomingMessage, wifiCon); // Use the new controller
   }
 }
 
@@ -198,31 +52,40 @@ void setup()
   // Init Serial Monitor
   Serial.begin(115200);
   delay(5000); // Delay to give time to start serial monitor
+
+  // Welcome Message to Serial Monitor
+  Serial.println("Welcome to the Garden Guardian Controller");
+
   // Set device as a Wi-Fi Station
-  WiFi.mode(WIFI_STA);
+  wifiCon.setMode(WIFI_AP_STA);
+
+  // New Flow: Use funtion to get wifi channel for SSId, send the channel to the ESP-NOW Peer using default channel first
+  // To have it update its channel, then connect to wifi
+
+
+  // Connect to Wi-Fi
+  wifiCon.connect(ssid, pass); // Pass ssid and pass to connect method
+  wifiChannel = getWiFiChannel(ssid);
+
+  // WiFi.printDiag(Serial); // Uncomment to verify channel number before
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(wifiChannel, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
+  // WiFi.printDiag(Serial); // Uncomment to verify channel change after
+
+  delay(1000);
 
   // Init ESP-NOW
-  if (esp_now_init() != ESP_OK)
-  {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
-
-  // Once ESPNow is successfully Init, we will register for Send CB to
-  // get the status of Trasnmitted packet
-  esp_now_register_send_cb(OnDataSent);
+  wifiCon.initESPNow();
 
   // Register peer
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
+  wifiCon.addPeer(broadcastAddress, wifiChannel);
 
-  // Add peer
-  if (esp_now_add_peer(&peerInfo) != ESP_OK)
-  {
-    Serial.println("Failed to add peer");
-    return;
-  }
+  // Command instructions
+  Serial.println("Commands: (X is the relay number)");
+  Serial.println("relayX on - Turn Relay X ON");
+  Serial.println("relayX off - Turn Relay X OFF");
+  Serial.println("relayX auto - Enable Auto Mode for Relay X");
 }
 
 void loop()
@@ -230,17 +93,3 @@ void loop()
   listenForCommands();
 }
 
-// Set values to send
-// strcpy(myData.timestamp, "2021-09-01 12:00:00");
-// myData.type = "RELAY:light";
-// myData.onHour = 6;
-// myData.offHour = 18;
-
-// if (sendData(&myData))
-// {
-//   Serial.println("Data sent");
-// }
-// else
-// {
-//   Serial.println("Data send failed");
-// }

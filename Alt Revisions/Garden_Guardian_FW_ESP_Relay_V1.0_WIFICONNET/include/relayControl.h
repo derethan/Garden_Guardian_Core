@@ -12,13 +12,12 @@ public:
     bool isOn();
     void setRelayForTimedIntervals(int onInterval, int offInterval);
     void setRelayforTemp(float temperature, float targetTemperature);
+    void checkRelay(RelayControl &relay, float temperature, float targetTemperature);
     void setRelayForSchedule(int onHour, int offHour, String currentTime);
     void setRelayForError(bool state);
     void toggleRelay();
     void setManualOverride(bool override);
     bool isManualOverride();
-    String getStatus() const;
-    uint8_t getPin() const { return relayPin; }
 
 private:
     uint8_t relayPin;
