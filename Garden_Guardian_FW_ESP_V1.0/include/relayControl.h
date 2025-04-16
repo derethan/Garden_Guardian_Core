@@ -13,8 +13,6 @@ public:
     void setRelayForTimedIntervals(int onInterval, int offInterval);
     void setRelayforTemp(float temperature, float targetTemperature);
     void setRelayForSchedule(int onHour, int offHour, String currentTime);
-    void setRelayForError(bool state);
-    void toggleRelay();
     void setManualOverride(bool override);
     bool isManualOverride();
 

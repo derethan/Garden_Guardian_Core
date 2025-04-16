@@ -341,6 +341,11 @@ String getCurrentFormattedTime() {
   
   char timeString[3];
   strftime(timeString, 3, "%H", &timeinfo);
+
+  // Log the time
+  Serial.print("Current time: ");
+  Serial.println(timeString);
+  
   return String(timeString);
 }
 
