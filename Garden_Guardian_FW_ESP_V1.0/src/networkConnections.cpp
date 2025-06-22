@@ -70,6 +70,7 @@ void NetworkConnections::setupWiFi(WiFiCredentials credentials, String idCode, b
 // Core Network Functions
 //------------------------------------------------------------------------------
 #include <Preferences.h> // Required for NVS
+#include <esp_task_wdt.h>
 Preferences preferences;
 
 WiFiCredentials NetworkConnections::loadWiFiCredentials()
@@ -231,14 +232,16 @@ void NetworkConnections::setupAP(String idCode)
 
 void NetworkConnections::scanNetworks()
 {
-
-    // Initialize Wi-Fi in Station mode
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     delay(100);
 
     Serial.println("Scanning for WiFi networks...");
+    esp_task_wdt_reset(); // Feed the watchdog in the loop
+    
     int numNetworks = WiFi.scanNetworks();
+
+
     Serial.print("Number of networks found: ");
     Serial.println(numNetworks);
 
@@ -254,6 +257,7 @@ void NetworkConnections::scanNetworks()
 
         for (int i = 0; i < numNetworks; i++)
         {
+            esp_task_wdt_reset(); // Feed the watchdog in the loop
 
             availableNetworks += "<option value='";
             availableNetworks += WiFi.SSID(i);

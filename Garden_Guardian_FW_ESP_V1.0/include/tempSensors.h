@@ -6,30 +6,31 @@
 #include <DallasTemperature.h>
 #include "config.h"
 
-class TempSensors {
+#define MAX_DS18B20_SENSORS 8
+
+class TempSensors
+{
 public:
     TempSensors();
     void initialize();
-    float readSensor1();
-    float readSensor2();
-    float readSensor3();
-    bool isSensorConnected(int sensorIndex);
-    void requestTemperatures();
-    
+    // Read temperature from a specific sensor by index
+    float readSensor(uint8_t index = 0);
+    // Read all sensors, store results in provided array, returns number of sensors read
+    int readAllSensors(float *temps, int maxCount);
+    // Get the number of sensors detected
+    uint8_t getSensorCount() const;
+    // Check if a specific sensor is connected
+    bool isSensorConnected(uint8_t index = 0) const;
+    // Get the address of a sensor by index
+    bool getSensorAddress(uint8_t index, DeviceAddress address) const;
+
 private:
-    OneWire oneWire1;
-    OneWire oneWire2;
-    OneWire oneWire3;
-    DallasTemperature sensors1;
-    DallasTemperature sensors2;
-    DallasTemperature sensors3;
-    bool sensor1Connected;
-    bool sensor2Connected;
-    bool sensor3Connected;
-    float lastTemp1;
-    float lastTemp2;
-    float lastTemp3;
-    const float TEMP_ERROR_VALUE = -127.0;
+    OneWire oneWire;
+    DallasTemperature sensors;
+    DeviceAddress sensorAddresses[MAX_DS18B20_SENSORS];
+    uint8_t sensorCount;
+    bool sensorConnected[MAX_DS18B20_SENSORS];
+    float lastTemp[MAX_DS18B20_SENSORS];
 };
 
 #endif // TEMPSENSORS_H

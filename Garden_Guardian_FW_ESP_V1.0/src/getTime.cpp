@@ -6,8 +6,8 @@
 #include "getTime.h"
 
 const char *ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = -12600;   // Adjust for your timezone (e.g., -18000 for EST)
-const int daylightOffset_sec = 3600; // Daylight savings time offset
+const long gmtOffset_sec = -12600; // Adjust for your timezone (e.g., -18000 for EST)
+const int daylightOffset_sec = 0;  // Daylight savings time offset
 
 TimeRetriever::TimeRetriever()
 {
@@ -41,14 +41,27 @@ String TimeRetriever::getCurrentTime()
     return "00:00:00"; // Placeholder implementation
   }
 
-  
-  // print formatted timeinfo to serial monitor
-  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
-  
-  char timeString[9];
-  strftime(timeString, 9, "%H:%M:%S", &timeinfo);
+  // Offset the time by -2.5 hours
+  timeinfo.tm_hour -= 2;
+  timeinfo.tm_min -= 30;
+  timeinfo.tm_sec -= 0;
+  mktime(&timeinfo); // Normalize the time structure
 
-  return String(timeString);
+  // 24-hour format
+  char timeString24[9];
+  strftime(timeString24, sizeof(timeString24), "%H:%M:%S", &timeinfo);
+
+  // 12-hour format with AM/PM
+  char timeString12[12];
+  strftime(timeString12, sizeof(timeString12), "%I:%M:%S %p", &timeinfo);
+
+  // Print both formats with identifier
+  Serial.print("[Time Retriever] 24-hour: ");
+  Serial.println(timeString24);
+  Serial.print("[Time Retriever] 12-hour: ");
+  Serial.println(timeString12);
+
+  return String(timeString24); // Return 24-hour format
 }
 
 String TimeRetriever::getCurrentDate()

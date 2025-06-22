@@ -181,14 +181,16 @@ void SensorDataManager::printAllSensorData()
             Serial.print(type);
             Serial.print(" ");
         }
+        Serial.println();
         Serial.print("Status: ");
         Serial.println(data.status);
-        Serial.print("Measurement: ");
+        Serial.print("Unit: ");
         for (const auto &unit : data.unit)
         {
             Serial.print(unit);
+            Serial.print(" ");
         }
-
+        Serial.println();
         Serial.print("Timestamp: ");
         Serial.println(data.timestamp);
         Serial.print("Values: ");

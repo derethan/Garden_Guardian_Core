@@ -1,9 +1,5 @@
 // System Libraries
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 #include <time.h>
 #include "esp_sleep.h"
 
@@ -13,21 +9,8 @@
 // Config
 #include "config.h"
 
-// BLE UUIDs
-#define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define TEMPERATURE_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define HUMIDITY_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a9"
-
-// BLE global variables
-BLEServer *pServer = nullptr;
-BLECharacteristic *pTemperatureCharacteristic = nullptr;
-BLECharacteristic *pHumidityCharacteristic = nullptr;
-bool deviceConnected = false;
-bool oldDeviceConnected = false;
-
 DHTSensor dhtSensor(DHTPIN, DHTTYPE);
 
-//
 // Structure to hold sensor data
 typedef struct
 {
@@ -50,24 +33,6 @@ const unsigned long READING_INTERVAL = 30000; // 5 minutes between readings
 
 const unsigned long SENSOR_STABILIZATION_TIME = 60000; // 1 minute stabilization
 bool deviceStabilized = false;
-
-// BLE server callbacks
-class MyServerCallbacks : public BLEServerCallbacks
-{
-  void onConnect(BLEServer *pServer)
-  {
-    deviceConnected = true;
-    Serial.print("[BLE] Device connected at t=");
-    Serial.println(millis());
-  };
-
-  void onDisconnect(BLEServer *pServer)
-  {
-    deviceConnected = false;
-    Serial.print("[BLE] Device disconnected at t=");
-    Serial.println(millis());
-  }
-};
 
 bool readSensorData(bool discardReading = false)
 {
@@ -114,51 +79,13 @@ bool readSensorData(bool discardReading = false)
 void setup()
 {
   Serial.begin(115200);
+  delay(5000); // Allow time for serial to initialize
   Serial.println("\n\n[SYSTEM] Garden Guardian starting up...");
 
   // Record start time for stabilization tracking
   deviceStartTime = millis();
   Serial.print("[SYSTEM] Device start time: t=");
   Serial.println(deviceStartTime);
-
-  // Debug delay
-  Serial.println("[SYSTEM] Initial 5-second delay...");
-  delay(5000);
-
-  // Initialize BLE
-  Serial.println("[BLE] Initializing BLE...");
-  BLEDevice::init("GG-ENV");
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-
-  // Create BLE Characteristics
-  Serial.println("[BLE] Creating BLE characteristics...");
-  pTemperatureCharacteristic = pService->createCharacteristic(
-      TEMPERATURE_UUID,
-      BLECharacteristic::PROPERTY_READ |
-          BLECharacteristic::PROPERTY_NOTIFY);
-  pHumidityCharacteristic = pService->createCharacteristic(
-      HUMIDITY_UUID,
-      BLECharacteristic::PROPERTY_READ |
-          BLECharacteristic::PROPERTY_NOTIFY);
-
-  // Create BLE Descriptor
-  pTemperatureCharacteristic->addDescriptor(new BLE2902());
-  pHumidityCharacteristic->addDescriptor(new BLE2902());
-
-  // Start the service
-  pService->start();
-
-  // Start advertising
-  Serial.println("[BLE] Starting advertisement...");
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x0); // set value to 0x00 to not advertise this parameter
-  BLEDevice::startAdvertising();
-  Serial.println("[BLE] BLE device ready to pair");
 
   // Initialize DHT sensor
   Serial.println("[SENSOR] Initializing DHT sensor...");
@@ -172,6 +99,8 @@ void setup()
     Serial.println("[SENSOR] DHT sensor initialized successfully");
   }
 
+  delay(1000);
+
   Serial.print("[SYSTEM] Setup complete. Waiting for sensor stabilization (");
   Serial.print(SENSOR_STABILIZATION_TIME / 1000);
   Serial.println(" seconds)...");
@@ -180,14 +109,6 @@ void setup()
 void loop()
 {
   unsigned long currentMillis = millis();
-
-  // If this is the start of a wake cycle, record the time
-  // if (wakeStartTime == 0)
-  // {
-  //   Serial.print("[SYSTEM] Device waking up at t=");
-  //   Serial.println(currentMillis);
-  //   wakeStartTime = currentMillis;
-  // }
 
   // Check device stabilization status
   if (!deviceStabilized && currentMillis - deviceStartTime >= SENSOR_STABILIZATION_TIME)
@@ -198,29 +119,13 @@ void loop()
     Serial.println(", starting normal operation");
 
     // Take first official reading immediately after stabilization
-    if (readSensorData(false) && deviceConnected)
+    if (readSensorData(false))
     {
-      Serial.println("[BLE] Sending first post-stabilization data");
-
-      // Convert float to string for BLE transmission
-      char tempStr[8];
-      char humStr[8];
-      dtostrf(sensorData.temperature, 6, 2, tempStr);
-      dtostrf(sensorData.humidity, 6, 2, humStr);
-
-      pTemperatureCharacteristic->setValue(tempStr);
-      pHumidityCharacteristic->setValue(humStr);
-      pTemperatureCharacteristic->notify();
-      pHumidityCharacteristic->notify();
-
-      Serial.print("[BLE] First data sent via BLE at t=");
+  
       Serial.println(currentMillis);
       lastReadingTime = currentMillis; // Update the reading time
     }
-    else if (!deviceConnected)
-    {
-      Serial.println("[BLE] No device connected, data not sent");
-    }
+  
   }
 
   // Read sensors at regular intervals regardless of stabilization
@@ -240,62 +145,8 @@ void loop()
 
     bool readSuccess = readSensorData(discardReading);
 
-    // Only send data if stabilized, reading successful, and connected
-    if (!discardReading && readSuccess && deviceConnected)
-    {
-      Serial.println("[BLE] Sending regular interval data");
-
-      // Convert float to string for BLE transmission
-      char tempStr[8];
-      char humStr[8];
-      dtostrf(sensorData.temperature, 6, 2, tempStr);
-      dtostrf(sensorData.humidity, 6, 2, humStr);
-
-      pTemperatureCharacteristic->setValue(tempStr);
-      pHumidityCharacteristic->setValue(humStr);
-      pTemperatureCharacteristic->notify();
-      pHumidityCharacteristic->notify();
-
-      Serial.print("[BLE] Data sent via BLE at t=");
-      Serial.println(currentMillis);
-    }
-    else if (!deviceConnected && !discardReading && readSuccess)
-    {
-      Serial.println("[BLE] No device connected, data not sent");
-    }
+  
   }
-
-  // Handle BLE connection status changes
-  if (!deviceConnected && oldDeviceConnected)
-  {
-    Serial.print("[BLE] Connection lost, restarting advertising at t=");
-    Serial.println(currentMillis);
-    delay(500);                  // Give the bluetooth stack time to get ready
-    pServer->startAdvertising(); // Restart advertising
-    Serial.println("[BLE] Advertisement restarted");
-    oldDeviceConnected = deviceConnected;
-  }
-
-  if (deviceConnected && !oldDeviceConnected)
-  {
-    Serial.print("[BLE] New connection established at t=");
-    Serial.println(currentMillis);
-    oldDeviceConnected = deviceConnected;
-  }
-
-  // Only enter sleep mode if minimum wake time has passed
-  // if (currentMillis - wakeStartTime >= MIN_WAKE_DURATION)
-  // {
-  //   Serial.print("[SYSTEM] Going to sleep for ");
-  //   Serial.print(SLEEP_DURATION / 1000000ULL);
-  //   Serial.print(" seconds at t=");
-  //   Serial.println(currentMillis);
-  //   delay(100); // Brief delay for serial to complete
-  //
-  //   esp_sleep_enable_timer_wakeup(SLEEP_DURATION);
-  //   wakeStartTime = 0; // Reset wake start time
-  //   esp_light_sleep_start();
-  // }
 
   // Add a debug statement every 30 seconds to show the system is still running
   static unsigned long lastHeartbeat = 0;
@@ -305,8 +156,6 @@ void loop()
     Serial.print(currentMillis);
     Serial.print(", stabilized=");
     Serial.print(deviceStabilized ? "true" : "false");
-    Serial.print(", connected=");
-    Serial.println(deviceConnected ? "true" : "false");
     lastHeartbeat = currentMillis;
   }
 

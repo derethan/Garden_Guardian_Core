@@ -17,19 +17,22 @@ bool RelayControl::isManualOverride()
 void RelayControl::initialize()
 {
     pinMode(relayPin, OUTPUT);
-    turnOff();
-}
-
-void RelayControl::turnOn()
-{
-    digitalWrite(relayPin, HIGH);
-    relayState = true;
+    turnOn(); // This sets the physical relay ON and relayState = true
+    Serial.println("Relay initialized - Pin: " + String(relayPin) + ", State: " + String(relayState ? "ON" : "OFF"));
 }
 
 void RelayControl::turnOff()
 {
-    digitalWrite(relayPin, LOW);
+    digitalWrite(relayPin, HIGH);
     relayState = false;
+    Serial.println("Relay Pin " + String(relayPin) + " turned OFF");
+}
+
+void RelayControl::turnOn()
+{
+    digitalWrite(relayPin, LOW);
+    relayState = true;
+    Serial.println("Relay Pin " + String(relayPin) + " turned ON");
 }
 
 bool RelayControl::isOn()
@@ -118,38 +121,131 @@ void RelayControl::setRelayforTemp(float temperature, float targetTemperature)
 // Set the relay based on the schedule
 void RelayControl::setRelayForSchedule(int onHour, int offHour, String currentTime)
 {
-    if (manualOverride)
-        return;
-
-    // Debugging: Print the current time
+    // Enhanced debugging - always print schedule check info
+    Serial.println("--- Relay Schedule Check ---");
     Serial.println("Current Time: " + currentTime);
+    Serial.println("Schedule: ON at " + String(onHour) + ":00, OFF at " + String(offHour) + ":00");
+    Serial.println("Current Relay State: " + String(relayState ? "ON" : "OFF"));
+    Serial.println("Manual Override: " + String(manualOverride ? "ACTIVE" : "INACTIVE"));
+
+    if (manualOverride)
+    {
+        Serial.println("Manual override is active - skipping schedule control");
+        Serial.println("---------------------------");
+        return;
+    }
 
     // Current time comes in like 14:58:59, extract parameters
     int currentHour = currentTime.substring(0, 2).toInt();
-
-        // log
-    Serial.println("Current Hour: " + String(currentHour));
+    Serial.println("Extracted current hour: " + String(currentHour));
 
     if (currentHour >= onHour && currentHour < offHour)
     {
+        Serial.println("Time is within schedule period (" + String(onHour) + ":00 - " + String(offHour) + ":00)");
         if (!relayState)
         {
-            // Debugging: Print The time is between the on and off hours
-            Serial.println("The time is between " + String(onHour) + " and " + String(offHour) + " hours");
-            Serial.println("Turning on relay");
-
+            Serial.println("Relay is OFF - turning ON for schedule");
             turnOn();
+        }
+        else
+        {
+            Serial.println("Relay is already ON - no action needed");
         }
     }
     else
     {
+        Serial.println("Time is outside schedule period (" + String(onHour) + ":00 - " + String(offHour) + ":00)");
         if (relayState)
         {
-            // Debugging: Print The time is not between the on and off hours
-            Serial.println("The time is not between " + String(onHour) + " and " + String(offHour) + " hours");
-            Serial.println("Turning off relay");
+            Serial.println("Relay is ON - turning OFF (outside schedule)");
+            turnOff();
+        }
+        else
+        {
+            Serial.println("Relay is already OFF - no action needed");
+        }
+    }
+    Serial.println("Final Relay State: " + String(relayState ? "ON" : "OFF"));
+    Serial.println("---------------------------");
+}
 
+/*******
+ * Auto Feeding System Control
+ * This function controls the nutrient feeding system based on TDS values.
+ * - Feeds for 5 seconds when TDS is below target
+ * - Waits for stabilization period before allowing next feeding cycle
+ **********************************************************************************************/
+void RelayControl::setAutoFeedingSystem(float tdsValue, float targetTDS, unsigned long stabilizationDelay)
+{
+    if (manualOverride)
+    {
+        Serial.println("Manual override active - skipping auto-feeding control");
+        return;
+    }
+
+    unsigned long currentTime = millis();
+
+    // Enhanced debugging
+    Serial.println("--- Auto Feeding System Check ---");
+    Serial.println("Current TDS: " + String(tdsValue) + " PPM");
+    Serial.println("Target TDS: " + String(targetTDS) + " PPM");
+    Serial.println("Currently Feeding: " + String(currentlyFeeding ? "YES" : "NO"));
+    Serial.println("Relay State: " + String(relayState ? "ON" : "OFF"));
+
+    // Handle active feeding cycle
+    if (currentlyFeeding)
+    {
+        unsigned long feedingElapsed = currentTime - feedingStartTime;
+        Serial.println("Feeding in progress - Elapsed: " + String(feedingElapsed) + "ms / " + String(FEEDING_DURATION) + "ms");
+
+        if (feedingElapsed >= FEEDING_DURATION)
+        {
+            // Stop feeding after 5 seconds
+            turnOff();
+            currentlyFeeding = false;
+            lastFeedingTime = currentTime;
+            Serial.println("Feeding cycle completed - waiting for stabilization");
+        }
+        Serial.println("----------------------------------");
+        return;
+    }
+
+    // Check if we're in stabilization period
+    if (lastFeedingTime > 0)
+    {
+        unsigned long timeSinceLastFeeding = currentTime - lastFeedingTime;
+        Serial.println("Time since last feeding: " + String(timeSinceLastFeeding / 1000) + "s / " + String(stabilizationDelay / 1000) + "s");
+
+        if (timeSinceLastFeeding < stabilizationDelay)
+        {
+            Serial.println("Still in stabilization period - no feeding allowed");
+            Serial.println("----------------------------------");
+            return;
+        }
+        else
+        {
+            Serial.println("Stabilization period complete - ready for next feeding if needed");
+        }
+    }
+
+    // Check if feeding is needed
+    if (tdsValue < (targetTDS - hysteresis))
+    {
+        Serial.println("TDS below target (with hysteresis) - starting feeding cycle");
+        turnOn();
+        currentlyFeeding = true;
+        feedingStartTime = currentTime;
+        Serial.println("Feeding started - will run for " + String(FEEDING_DURATION / 1000) + " seconds");
+    }
+    else
+    {
+        Serial.println("TDS within acceptable range - no feeding needed");
+        // Ensure relay is off if we're not feeding
+        if (relayState)
+        {
             turnOff();
         }
     }
+
+    Serial.println("----------------------------------");
 }

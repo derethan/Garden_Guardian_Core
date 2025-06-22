@@ -1,96 +1,98 @@
 #include "tempSensors.h"
 
-TempSensors::TempSensors() 
-    : oneWire1(TEMP_SENSOR_1_PIN)
-    , oneWire2(TEMP_SENSOR_2_PIN)
-    , oneWire3(TEMP_SENSOR_3_PIN)
-    , sensors1(&oneWire1)
-    , sensors2(&oneWire2)
-    , sensors3(&oneWire3)
-    , sensor1Connected(false)
-    , sensor2Connected(false)
-    , sensor3Connected(false)
-    , lastTemp1(TEMP_ERROR_VALUE)
-    , lastTemp2(TEMP_ERROR_VALUE)
-    , lastTemp3(TEMP_ERROR_VALUE)
+TempSensors::TempSensors()
+    : oneWire(TEMP_SENSOR_PIN), sensors(&oneWire), sensorCount(0)
 {
-}
-
-void TempSensors::initialize() {
-    sensors1.begin();
-    sensors2.begin();
-    sensors3.begin();
-    
-    // Check if sensors are connected
-    sensors1.requestTemperatures();
-    sensors2.requestTemperatures();
-    sensors3.requestTemperatures();
-    
-    sensor1Connected = (sensors1.getTempCByIndex(0) != TEMP_ERROR_VALUE);
-    sensor2Connected = (sensors2.getTempCByIndex(0) != TEMP_ERROR_VALUE);
-    sensor3Connected = (sensors3.getTempCByIndex(0) != TEMP_ERROR_VALUE);
-    
-    if (DEBUG_MODE) {
-        Serial.println("Temperature Sensors Initialization:");
-        Serial.print("Sensor 1 Connected: "); Serial.println(sensor1Connected);
-        Serial.print("Sensor 2 Connected: "); Serial.println(sensor2Connected);
-        Serial.print("Sensor 3 Connected: "); Serial.println(sensor3Connected);
+    for (uint8_t i = 0; i < MAX_DS18B20_SENSORS; ++i) {
+        sensorConnected[i] = false;
+        lastTemp[i] = DEVICE_DISCONNECTED_C;
     }
 }
 
-void TempSensors::requestTemperatures() {
-    if (sensor1Connected) sensors1.requestTemperatures();
-    if (sensor2Connected) sensors2.requestTemperatures();
-    if (sensor3Connected) sensors3.requestTemperatures();
-}
-
-float TempSensors::readSensor1() {
-    if (!sensor1Connected) return TEMP_ERROR_VALUE;
-    
-    float temp = sensors1.getTempCByIndex(0);
-    if (temp != TEMP_ERROR_VALUE) {
-        lastTemp1 = temp;
-        if (DEBUG_MODE) {
-            Serial.print("Sensor 1 Temperature: ");
-            Serial.println(temp);
+void TempSensors::initialize()
+{
+    sensors.begin();
+    delay(1000); // Allow time for sensors to initialize
+    sensorCount = sensors.getDeviceCount();
+    for (uint8_t i = 0; i < sensorCount && i < MAX_DS18B20_SENSORS; ++i) {
+        if (sensors.getAddress(sensorAddresses[i], i)) {
+            sensorConnected[i] = true;
+        } else {
+            sensorConnected[i] = false;
         }
     }
-    return lastTemp1;
-}
-
-float TempSensors::readSensor2() {
-    if (!sensor2Connected) return TEMP_ERROR_VALUE;
-    
-    float temp = sensors2.getTempCByIndex(0);
-    if (temp != TEMP_ERROR_VALUE) {
-        lastTemp2 = temp;
-        if (DEBUG_MODE) {
-            Serial.print("Sensor 2 Temperature: ");
-            Serial.println(temp);
+    sensors.requestTemperatures();
+    delay(1000); // Delay for the sensor to initialize
+    if (DEBUG_MODE)
+    {
+        Serial.println("Temperature Sensors Initialized");
+        Serial.print("Sensors Detected: ");
+        Serial.println(sensorCount);
+        for (uint8_t i = 0; i < sensorCount; ++i) {
+            Serial.print("Sensor "); Serial.print(i); Serial.print(" Connected: ");
+            Serial.println(sensorConnected[i] ? "Yes" : "No");
         }
     }
-    return lastTemp2;
 }
 
-float TempSensors::readSensor3() {
-    if (!sensor3Connected) return TEMP_ERROR_VALUE;
-    
-    float temp = sensors3.getTempCByIndex(0);
-    if (temp != TEMP_ERROR_VALUE) {
-        lastTemp3 = temp;
-        if (DEBUG_MODE) {
-            Serial.print("Sensor 3 Temperature: ");
-            Serial.println(temp);
+float TempSensors::readSensor(uint8_t index)
+{
+    if (index >= sensorCount || !sensorConnected[index])
+        return DEVICE_DISCONNECTED_C;
+    const int NUM_READS = 5;
+    float sum = 0;
+    int validReads = 0;
+    for (int i = 0; i < NUM_READS; i++)
+    {
+        sensors.requestTemperaturesByAddress(sensorAddresses[index]);
+        float temp = sensors.getTempC(sensorAddresses[index]);
+        if (temp != DEVICE_DISCONNECTED_C)
+        {
+            sum += temp;
+            validReads++;
+        }
+        delay(100);
+    }
+    float result = (validReads > 0) ? (sum / validReads) : DEVICE_DISCONNECTED_C;
+    lastTemp[index] = result;
+    sensorConnected[index] = (result != DEVICE_DISCONNECTED_C);
+    if (DEBUG_MODE)
+    {
+        Serial.print("Sensor "); Serial.print(index); Serial.print(" Temperature: ");
+        Serial.println(result);
+    }
+    return result;
+}
+
+int TempSensors::readAllSensors(float *temps, int maxCount)
+{
+    int count = (sensorCount < maxCount) ? sensorCount : maxCount;
+    sensors.requestTemperatures();
+    for (int i = 0; i < count; ++i) {
+        if (sensorConnected[i]) {
+            temps[i] = sensors.getTempC(sensorAddresses[i]);
+            lastTemp[i] = temps[i];
+        } else {
+            temps[i] = DEVICE_DISCONNECTED_C;
         }
     }
-    return lastTemp3;
+    return count;
 }
 
-bool TempSensors::isSensorConnected(int sensorIndex) {
-    switch(sensorIndex) {
-        case 1: return sensor1Connected;
-        case 2: return sensor2Connected;
-        case 3: return sensor3Connected;
-        default: return false;
-    }
+uint8_t TempSensors::getSensorCount() const
+{
+    return sensorCount;
+}
+
+bool TempSensors::isSensorConnected(uint8_t index) const
+{
+    if (index >= sensorCount) return false;
+    return sensorConnected[index];
+}
+
+bool TempSensors::getSensorAddress(uint8_t index, DeviceAddress address) const
+{
+    if (index >= sensorCount) return false;
+    memcpy(address, sensorAddresses[index], sizeof(DeviceAddress));
+    return true;
 }
