@@ -370,17 +370,17 @@ bool readTempData()
 
 bool readTDSData()
 {
-  float tdsValue = tdsSensor.read(state.NFT_Res_Temp); // Use NFT_Res_Temp for temperature compensation
+  state.tdsValue = tdsSensor.read(state.NFT_Res_Temp); // Use NFT_Res_Temp for temperature compensation
 
   sensorData.addSensorData({.sensorID = "TDS-1",
                             .sensorType = {"TDS"},
                             .status = 0,
                             .unit = {"PPM"},
                             .timestamp = state.currentTime,
-                            .values = {tdsValue}});
+                            .values = {state.tdsValue}});
 
   // Check if the TDS value is within a reasonable range
-  if (tdsValue < 0 || tdsValue > 10000) // Example range check for TDS values
+  if (state.tdsValue < 0 || state.tdsValue > 10000) // Example range check for TDS values
   {
     logError("Sensor Error from readTDSData (): Invalid TDS reading");
     return false;
