@@ -30,7 +30,7 @@ private:
     unsigned long feedingStartTime = 0;
     unsigned long lastFeedingTime = 0;
     bool currentlyFeeding = false;
-    static const unsigned long FEEDING_DURATION = 5000; // 5 seconds
+    static const unsigned long FEEDING_DURATION = 30000; // 30 seconds
 };
 
 #endif // RELAYCONTROL_H

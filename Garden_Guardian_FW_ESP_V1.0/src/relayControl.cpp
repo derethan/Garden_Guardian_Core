@@ -229,7 +229,11 @@ void RelayControl::setAutoFeedingSystem(float tdsValue, float targetTDS, unsigne
     }
 
     // Check if feeding is needed
-    if (tdsValue < (targetTDS - hysteresis))
+    float feedingThreshold = targetTDS;
+    Serial.println("Feeding threshold: " + String(feedingThreshold) + " PPM");
+    Serial.println("TDS comparison: " + String(tdsValue) + " < " + String(feedingThreshold) + " = " + String(tdsValue < feedingThreshold ? "TRUE" : "FALSE"));
+    
+    if (tdsValue < feedingThreshold)
     {
         Serial.println("TDS below target (with hysteresis) - starting feeding cycle");
         turnOn();

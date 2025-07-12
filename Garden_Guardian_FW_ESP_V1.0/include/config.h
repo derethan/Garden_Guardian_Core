@@ -1,7 +1,11 @@
 #ifndef PINDEFINITIONS_H
 #define PINDEFINITIONS_H
 
-#define DEBUG_MODE true
+#define DEBUG_MODE false
+
+// Device Information
+#define DEVICE_ID "GG-"
+#define IDCODE "00000001" // Unique device identifier
 
 // Defined Relay pins
 #define RELAY1_PIN 26

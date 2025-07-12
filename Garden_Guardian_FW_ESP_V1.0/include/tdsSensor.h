@@ -5,7 +5,7 @@
 
 class TDSSensor {
 public:
-    TDSSensor(uint8_t pin, float vref = 5.0, int scount = 30);
+    TDSSensor(uint8_t pin, float vref = 3.3, int scount = 30); // Changed default from 5.0V to 3.3V for ESP32
     float read(float temperature = 25.0);
 
 private:

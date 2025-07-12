@@ -8,6 +8,7 @@
 
 #include "secrets.h"
 #include "config.h"
+#include "state.h"
 
 // Module Imports
 #include "networkConnections.h"
@@ -17,62 +18,6 @@
 #include "tempSensors.h"
 #include "tdsSensor.h"
 
-/*****************************************
- * Global State Variables
- *****************************************/
-enum class SystemMode
-{
-  INITIALIZING,
-  NORMAL_OPERATION,
-  ERROR,
-  CONFIG_MODE
-};
-
-struct SystemState
-{
-  SystemMode currentMode = SystemMode::INITIALIZING;
-
-  uint32_t sensorRead_interval = 30; // 30 seconds
-  unsigned long relayReadInterval = 60;
-
-  unsigned long tdsControllerInterval = 5; // Check TDS controller every 5 seconds
-  unsigned long lastTDSControllerRead = 0; // Add this new variable
-
-  unsigned long lastSensorRead = 0;
-  unsigned long lastPublishTime = 0;
-  uint32_t lastTimeSyncEpoch = 0;
-  unsigned long lastRelayRead = 0;
-
-  unsigned long currentTime = 0;
-  unsigned long lastWiFiRetry = 0;
-
-  bool wasConnected = false;
-  String deviceID;
-  String idCode;
-
-  bool sensorError = false;
-  uint32_t lastErrorTime = 0;
-  String lastErrorMessage;
-
-  bool apAlwaysOn = false;
-
-  unsigned long relayScheduleOnHour = 0;
-  unsigned long RelayScheduleOffHour = 18;
-  // unsigned long relayTimerOnInterval = 0;
-  // unsigned long relayTimerOffInterval = 0;
-
-  float DWC_Res_Temp = 0;
-  float Target_DWC_Res_Temp = 18;
-  float NFT_Res_Temp = 0;
-  float Target_NFT_Res_Temp = 18;
-  float Current_Air_Temp = 0;
-  float Target_Air_Temp = 25;
-
-  float tdsValue = 0;
-  float targetTDS = 500;     // Default target TDS value
-  float tdsHysteresis = 100; // Hysteresis for TDS control
-
-} state;
 
 // BLE State structure
 struct BLEState
@@ -101,8 +46,6 @@ RelayControl relay4(RELAY4_PIN, 5.0);
 // Auto Control Unit Relays (Food, Water, PH)
 RelayControl TDSController(TDS_CTRL_PIN, state.tdsHysteresis); // TDS Controller Relay
 
-// RelayControl *relays[] = {&relay1, &relay2, &relay3, &relay4};
-
 // Temperature Sensors
 TempSensors tempSensors;
 
@@ -120,6 +63,54 @@ void readSensorData();
 void setupNetwork();
 bool readTempData();
 bool readTDSData();
+
+/*****************************************
+ * Configuration Functions
+ *****************************************/
+void loadDeviceSettings()
+{
+  Serial.println("[SYSTEM] Loading device settings...");
+
+  DeviceSettings settings = network.loadDeviceSettings();
+
+  if (settings.valid)
+  { // Apply loaded settings
+    state.SLEEP_DURATION = settings.sleepDuration;
+    state.sensorRead_interval = settings.sensorReadInterval;
+    state.SENSOR_STABILIZATION_TIME = settings.sensorStabilizationTime;
+    state.deviceID = settings.deviceID;
+    state.idCode = settings.idCode;
+    state.httpPublishEnabled = settings.httpPublishEnabled;
+    state.httpPublishInterval = settings.httpPublishInterval;
+
+    Serial.println("[SYSTEM] Device settings applied:");
+    Serial.print("  Sleep Duration: ");
+    Serial.print(state.SLEEP_DURATION / 1000000ULL);
+    Serial.println(" seconds");
+    Serial.print("  Sensor Read Interval: ");
+    Serial.print(state.sensorRead_interval / 1000);
+    Serial.println(" seconds");
+    Serial.print("  Stabilization Time: ");
+    Serial.print(state.SENSOR_STABILIZATION_TIME / 1000);
+    Serial.println(" seconds");
+    Serial.print("  Device ID: ");
+    Serial.println(state.deviceID);
+    Serial.print("  ID Code: ");
+    Serial.println(state.idCode);
+    Serial.print("  HTTP Publishing: ");
+    Serial.println(state.httpPublishEnabled ? "Enabled" : "Disabled");
+    if (state.httpPublishEnabled)
+    {
+      Serial.print("  HTTP Publish Interval: ");
+      Serial.print(state.httpPublishInterval / 1000);
+      Serial.println(" seconds");
+    }
+  }
+  else
+  {
+    Serial.println("[SYSTEM] Using default device settings");
+  }
+}
 
 /*****************************************
  * Utility Functions

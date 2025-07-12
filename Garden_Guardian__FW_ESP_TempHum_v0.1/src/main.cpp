@@ -13,6 +13,10 @@
 #include "config.h"
 #include "secrets.h"
 
+// Base configuration system
+#include "base/deviceConfig.h"
+#include "tempHumDeviceConfig.h"
+
 /*****************************************
  * Global State Variables
  *****************************************/
@@ -86,47 +90,11 @@ void logError(const char *message);
  *****************************************/
 void loadDeviceSettings()
 {
-  Serial.println("[SYSTEM] Loading device settings...");
-
-  DeviceSettings settings = network.loadDeviceSettings();
-
-  if (settings.valid)
-  { // Apply loaded settings
-    state.SLEEP_DURATION = settings.sleepDuration;
-    state.sensorRead_interval = settings.sensorReadInterval;
-    state.SENSOR_STABILIZATION_TIME = settings.sensorStabilizationTime;
-    state.deviceID = settings.deviceID;
-    state.idCode = settings.idCode;
-    state.httpPublishEnabled = settings.httpPublishEnabled;
-    state.httpPublishInterval = settings.httpPublishInterval;
-
-    Serial.println("[SYSTEM] Device settings applied:");
-    Serial.print("  Sleep Duration: ");
-    Serial.print(state.SLEEP_DURATION / 1000000ULL);
-    Serial.println(" seconds");
-    Serial.print("  Sensor Read Interval: ");
-    Serial.print(state.sensorRead_interval / 1000);
-    Serial.println(" seconds");
-    Serial.print("  Stabilization Time: ");
-    Serial.print(state.SENSOR_STABILIZATION_TIME / 1000);
-    Serial.println(" seconds");
-    Serial.print("  Device ID: ");
-    Serial.println(state.deviceID);
-    Serial.print("  ID Code: ");
-    Serial.println(state.idCode);
-    Serial.print("  HTTP Publishing: ");
-    Serial.println(state.httpPublishEnabled ? "Enabled" : "Disabled");
-    if (state.httpPublishEnabled)
-    {
-      Serial.print("  HTTP Publish Interval: ");
-      Serial.print(state.httpPublishInterval / 1000);
-      Serial.println(" seconds");
-    }
-  }
-  else
-  {
-    Serial.println("[SYSTEM] Using default device settings");
-  }
+  // Create device-specific settings applier
+  TempHumDeviceSettingsApplier applier(state);
+  
+  // Use the base configuration system to load and apply settings
+  BaseConfig::loadAndApplyDeviceSettings(network, &applier);
 }
 
 /*****************************************
