@@ -7,6 +7,22 @@
 #include <ArduinoJson.h>
 #include "dataProvider.h" // Include for sensor data access
 #include "server.h"       // Include for server configuration
+#include "state.h"        // Include for system state access
+
+//------------------------------------------------------------------------------
+// Module Flags - Enable/Disable sensor display cards
+//
+// Set any of these flags to 'true' to enable the corresponding sensor card
+// on the web dashboard, or 'false' to disable it. This allows you to
+// customize which sensors are displayed based on your hardware configuration.
+//
+// Available modules:
+// - TEMP_DISPLAY: Air/ambient temperature sensor card
+// - HUMIDITY_DISPLAY: Humidity sensor card
+// - TDS_DISPLAY: Total Dissolved Solids (water quality) sensor card
+// - WATER_TEMP_DISPLAY: Water temperature sensor card
+//------------------------------------------------------------------------------
+// Display flags are now defined in config.h to avoid redefinition warnings
 
 //------------------------------------------------------------------------------
 // Global Variables
@@ -151,13 +167,18 @@ bool NetworkConnections::connectToNetwork(String ssid, String password)
 
 void NetworkConnections::startWebServer()
 {
+
     // Check if web server is already running
     if (webServerStarted)
     {
         Serial.println("[WEB] Web server is already running");
         return;
     }
+    // Scan for available networks before starting the server
+    // scanNetworks(); // Scan for available networks
+    // delay(1000);    // Delay to allow scan to complete
 
+    Serial.println("----------------------------------------------");
     Serial.println("[WEB] Starting web server on port 80...");
 
     // Start the web server
@@ -172,6 +193,9 @@ void NetworkConnections::startWebServer()
     Serial.println("[WEB]   /data          - JSON API endpoint");
     Serial.println("[WEB]   /config        - WiFi configuration");
     Serial.println("[WEB]   /advanced      - Advanced device settings");
+    Serial.println("----------------------------------------------");
+    Serial.println(" ");
+
 }
 
 unsigned long NetworkConnections::getTime()
@@ -487,9 +511,10 @@ void NetworkConnections::sendWiFiConfigPage(WiFiClient &client)
     client.println("<button type='submit' id='submitButton' disabled>Save & Connect</button>");
     client.println("</form>");
 
-    // Link to advanced settings
+    // Navigation links
     client.println("<div style='margin-top: 20px; text-align: center;'>");
-    client.println("<a href='/advanced' style='text-decoration: none; color: #208dbf; font-size: 14px;'>⚙️ Advanced Device Settings</a>");
+    client.println("<a href='/' style='text-decoration: none; color: #3F9E3F; font-size: 14px; margin-right: 15px;'>🏠 Back to Dashboard</a>");
+    client.println("<a href='/advanced' style='text-decoration: none; color: #3F9E3F; font-size: 14px;'>⚙️ Advanced Device Settings</a>");
     client.println("</div>");
 
     sendPageFooter(client);
@@ -647,6 +672,12 @@ void NetworkConnections::saveDeviceSettings(const DeviceSettings &settings)
     preferences.putULong("ntpRetryInterval", settings.ntpRetryInterval);
     preferences.putBool("httpPublishEnabled", settings.httpPublishEnabled);
     preferences.putULong("httpPublishInterval", settings.httpPublishInterval);
+    
+    // Save target values
+    preferences.putFloat("targetTDS", settings.targetTDS);
+    preferences.putFloat("targetAirTemp", settings.targetAirTemp);
+    preferences.putFloat("targetNFTTemp", settings.targetNFTResTemp);
+    preferences.putFloat("targetDWCTemp", settings.targetDWCResTemp);
 
     preferences.end();
     Serial.println("Device settings successfully saved to NVS.");
@@ -667,6 +698,27 @@ DeviceSettings NetworkConnections::loadDeviceSettings()
     settings.ntpRetryInterval = preferences.getULong("ntpRetryInterval", 3600000);
     settings.httpPublishEnabled = preferences.getBool("httpPublishEnabled", true);
     settings.httpPublishInterval = preferences.getULong("httpPublishInterval", 300000);
+    
+    // Load target values with error handling
+    if (preferences.isKey("targetTDS"))
+        settings.targetTDS = preferences.getFloat("targetTDS", 500.0);
+    else
+        settings.targetTDS = 500.0;
+        
+    if (preferences.isKey("targetAirTemp"))
+        settings.targetAirTemp = preferences.getFloat("targetAirTemp", 25.0);
+    else
+        settings.targetAirTemp = 25.0;
+        
+    if (preferences.isKey("targetNFTTemp"))
+        settings.targetNFTResTemp = preferences.getFloat("targetNFTTemp", 18.0);
+    else
+        settings.targetNFTResTemp = 18.0;
+        
+    if (preferences.isKey("targetDWCTemp"))
+        settings.targetDWCResTemp = preferences.getFloat("targetDWCTemp", 18.0);
+    else
+        settings.targetDWCResTemp = 18.0;
 
     preferences.end();
 
@@ -703,6 +755,32 @@ DeviceSettings NetworkConnections::loadDeviceSettings()
     }
 
     return settings;
+}
+
+void NetworkConnections::saveTargetValues(float targetTDS, float targetAirTemp, float targetNFTResTemp, float targetDWCResTemp)
+{
+    Serial.println("Saving target values to NVS...");
+    preferences.begin("device", false); // Read-write mode
+    
+    // Clean up old long key names that might be corrupted
+    if (preferences.isKey("targetNFTResTemp")) {
+        preferences.remove("targetNFTResTemp");
+        Serial.println("Removed old targetNFTResTemp key");
+    }
+    if (preferences.isKey("targetDWCResTemp")) {
+        preferences.remove("targetDWCResTemp");
+        Serial.println("Removed old targetDWCResTemp key");
+    }
+    
+    preferences.putFloat("targetTDS", targetTDS);
+    preferences.putFloat("targetAirTemp", targetAirTemp);
+    preferences.putFloat("targetNFTTemp", targetNFTResTemp);
+    preferences.putFloat("targetDWCTemp", targetDWCResTemp);
+    
+    preferences.end();
+    Serial.println("Target values successfully saved to NVS.");
+    Serial.printf("Saved values - TDS: %.1f ppm, Air: %.1f°C, NFT: %.1f°C, DWC: %.1f°C\n", 
+                  targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
 }
 
 //------------------------------------------------------------------------------
@@ -778,23 +856,86 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
     {
         Serial.println("New Client Connected!");
         String request = "";
-        unsigned long timeout = millis() + 5000; // 5-second timeout
+        unsigned long timeout = millis() + 3000; // 3-second timeout for initial connection
+        bool headerComplete = false;
 
-        // Read the full request (including headers & body)
+        // Read the request headers first
         while (client.connected() && millis() < timeout)
         {
             if (client.available())
             {
                 char c = client.read();
                 request += c;
+                
+                // Reset timeout when we're actively receiving data
+                timeout = millis() + 1000; // 1 second timeout for additional data
 
-                // Check if we have received the complete request
+                // Check if we have received the complete request headers
                 if (request.endsWith("\r\n\r\n"))
                 {
+                    headerComplete = true;
                     break;
                 }
             }
-            delay(1);
+            else
+            {
+                delay(1); // Small delay to prevent busy waiting
+            }
+        }
+
+        // Handle empty or incomplete requests (common with browser preflight requests)
+        if (request.length() == 0)
+        {
+            // Don't log empty requests as they're often just browser probes
+            client.stop();
+            return;
+        }
+
+        if (!headerComplete)
+        {
+            Serial.println("Incomplete request received - timeout");
+            client.println("HTTP/1.1 408 Request Timeout");
+            client.println("Connection: close");
+            client.println();
+            client.stop();
+            return;
+        }
+
+        // For POST requests, read the body data based on Content-Length
+        if (request.indexOf("POST") >= 0)
+        {
+            int contentLengthStart = request.indexOf("Content-Length: ");
+            if (contentLengthStart >= 0)
+            {
+                contentLengthStart += 16; // Move past "Content-Length: "
+                int contentLengthEnd = request.indexOf("\r\n", contentLengthStart);
+                if (contentLengthEnd > contentLengthStart)
+                {
+                    String contentLengthStr = request.substring(contentLengthStart, contentLengthEnd);
+                    int contentLength = contentLengthStr.toInt();
+                    
+                    if (contentLength > 0 && contentLength < 1024) // Reasonable limit
+                    {
+                        Serial.printf("Reading POST body, Content-Length: %d\n", contentLength);
+                        timeout = millis() + 2000; // 2 second timeout for body
+                        
+                        while (client.connected() && millis() < timeout && contentLength > 0)
+                        {
+                            if (client.available())
+                            {
+                                char c = client.read();
+                                request += c;
+                                contentLength--;
+                                timeout = millis() + 1000; // Reset timeout when receiving data
+                            }
+                            else
+                            {
+                                delay(1);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Serial.println("Full HTTP Request:");
@@ -803,7 +944,8 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
         if (request.indexOf("GET / HTTP") >= 0 || request.indexOf("GET /index") >= 0)
         {
             // Main sensor data page
-            sendSensorDataPage(client, readings);
+            DeviceSettings settings = loadDeviceSettings();
+            sendSensorDataPage(client, readings, settings);
         }
         else if (request.indexOf("GET /data") >= 0)
         {
@@ -831,6 +973,11 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
             // Process advanced configuration
             processAdvancedConfig(client, request);
         }
+        else if (request.indexOf("POST /quick-controls") >= 0)
+        {
+            // Process quick controls (target values)
+            processQuickControls(client, request);
+        }
         else
         {
             // 404 - Not Found
@@ -841,25 +988,28 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
             client.println("<html><body><h1>404 - Page Not Found</h1></body></html>");
         }
 
-        delay(100);
+        // Give client time to receive response before closing connection
+        client.flush(); // Ensure all data is sent
+        delay(50);      // Brief delay to ensure transmission completion
         client.stop();
         Serial.println("Client Disconnected.");
     }
 }
 
-void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestReadings &readings)
+void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestReadings &readings, const DeviceSettings &settings)
 {
     sendHTTPHeader(client);
     client.println("<html><head>");
     client.println("<meta charset='UTF-8'>");
-    client.println("<title>Garden Guardian - Sensor Data</title>");
+    client.println("<title>Garden Guardian</title>");
     client.println("<meta name='viewport' content='width=device-width, initial-scale=1'>");
-    client.println("<meta http-equiv='refresh' content='30'>"); // Auto-refresh every 30 seconds
+    client.println("<meta http-equiv='refresh' content='60'>"); // Auto-refresh every 60 seconds
     client.println("<style>");
 
     // Enhanced CSS for sensor data display
     client.println("body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f2f5; }");
-    client.println(".header { background: linear-gradient(135deg, #208dbf, #1e7ba8); color: white; padding: 20px; text-align: center; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }");
+    client.println(".header { background: linear-gradient(135deg, #3F9E3F, #2d7a2d); color: white; padding: 20px; text-align: center; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }");
+    client.println(".header-logo { width: 60px; height: 60px; margin-bottom: 10px; border-radius: 8px; }");
     client.println(".container { max-width: 1200px; margin: 0 auto; }");
     client.println(".sensor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 20px; }");
     client.println(".sensor-card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); transition: transform 0.2s; }");
@@ -868,20 +1018,52 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
     client.println(".sensor-value { font-size: 32px; font-weight: bold; margin: 10px 0; }");
     client.println(".sensor-unit { font-size: 14px; color: #666; margin-left: 5px; }");
     client.println(".sensor-timestamp { font-size: 12px; color: #888; margin-top: 10px; }");
-    client.println(".status-ok { color: #28a745; }");
+    client.println(".status-ok { color: #3F9E3F; }");
     client.println(".status-warning { color: #ffc107; }");
     client.println(".status-error { color: #dc3545; }");
     client.println(".info-section { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }");
     client.println(".nav-buttons { text-align: center; margin: 20px 0; }");
-    client.println(".nav-buttons a { display: inline-block; background: #208dbf; color: white; text-decoration: none; padding: 10px 20px; margin: 0 10px; border-radius: 5px; transition: background 0.2s; }");
-    client.println(".nav-buttons a:hover { background: #1e7ba8; }");
+    client.println(".nav-buttons a { display: inline-block; background: #3F9E3F; color: white; text-decoration: none; padding: 10px 20px; margin: 0 10px; border-radius: 5px; transition: background 0.2s; }");
+    client.println(".nav-buttons a:hover { background: #2d7a2d; }");
     client.println("</style>");
     client.println("</head><body>");
 
     client.println("<div class='container'>");
     client.println("<div class='header'>");
+    client.println("<img src='https://i.ibb.co/KxFvkcsQ/pwa-512x512.png' alt='Garden Guardian Logo' class='header-logo'>");
     client.println("<h1>Garden Guardian</h1>");
-    client.println("<p>Temperature & Humidity Monitor</p>");
+
+    // Dynamic subtitle based on enabled modules
+    client.print("<p>");
+    bool firstModule = true;
+#if TEMP_DISPLAY
+    if (!firstModule)
+        client.print(" & ");
+    client.print("Temperature");
+    firstModule = false;
+#endif
+#if HUMIDITY_DISPLAY
+    if (!firstModule)
+        client.print(" & ");
+    client.print("Humidity");
+    firstModule = false;
+#endif
+#if TDS_DISPLAY
+    if (!firstModule)
+        client.print(" & ");
+    client.print("TDS");
+    firstModule = false;
+#endif
+#if WATER_TEMP_DISPLAY
+    if (!firstModule)
+        client.print(" & ");
+    client.print("Water Temperature");
+    firstModule = false;
+#endif
+    if (firstModule)
+        client.print("System");
+    client.print(" Monitor</p>");
+
     client.println("</div>");
     // Navigation buttons
     client.println("<div class='nav-buttons'>");
@@ -889,7 +1071,217 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
     client.println("<a href='/data'>JSON Data</a>");
     client.println("<a href='/config'>WiFi Config</a>");
     client.println("<a href='/advanced'>Advanced Settings</a>");
-    client.println("</div>"); // System info section
+    client.println("</div>");
+    
+    // Sensor data grid
+    client.println("<div class='sensor-grid'>");
+
+// Temperature Card
+#if TEMP_DISPLAY
+    client.println("<div class='sensor-card'>");
+    client.println("<div class='sensor-title'>🌡️ Temperature</div>");
+
+    client.print("<div class='sensor-value ");
+    client.print(getStatusColor(readings.temperatureStatus));
+    client.print("'>");
+    if (!isnan(readings.temperature))
+    {
+        client.print(readings.temperature, 1);
+        client.print("<span class='sensor-unit'>°C</span>");
+    }
+    else
+    {
+        client.print("--");
+    }
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Status: ");
+    client.print(getStatusText(readings.temperatureStatus));
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Last reading: ");
+    client.print(formatTimestamp(readings.temperatureTimestamp));
+    client.println("</div>");
+
+    client.println("</div>");
+#endif
+
+// Humidity Card
+#if HUMIDITY_DISPLAY
+    client.println("<div class='sensor-card'>");
+    client.println("<div class='sensor-title'>💧 Humidity</div>");
+
+    client.print("<div class='sensor-value ");
+    client.print(getStatusColor(readings.humidityStatus));
+    client.print("'>");
+    if (!isnan(readings.humidity))
+    {
+        client.print(readings.humidity, 1);
+        client.print("<span class='sensor-unit'>%</span>");
+    }
+    else
+    {
+        client.print("--");
+    }
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Status: ");
+    client.print(getStatusText(readings.humidityStatus));
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Last reading: ");
+    client.print(formatTimestamp(readings.humidityTimestamp));
+    client.println("</div>");
+
+    client.println("</div>");
+#endif
+
+// TDS Card
+#if TDS_DISPLAY
+    client.println("<div class='sensor-card'>");
+    client.println("<div class='sensor-title'>🔬 TDS (Total Dissolved Solids)</div>");
+
+    client.print("<div class='sensor-value ");
+    client.print(getStatusColor(readings.tdsStatus));
+    client.print("'>");
+    if (!isnan(readings.tds))
+    {
+        client.print(readings.tds, 0);
+        client.print("<span class='sensor-unit'>ppm</span>");
+    }
+    else
+    {
+        client.print("--");
+    }
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Target: ");
+    client.print(settings.targetTDS, 0);
+    client.println(" ppm</div>");
+
+    client.print("<div class='sensor-timestamp'>Status: ");
+    client.print(getStatusText(readings.tdsStatus));
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Last reading: ");
+    client.print(formatTimestamp(readings.tdsTimestamp));
+    client.println("</div>");
+
+    client.println("</div>");
+#endif
+
+// Water Temperature Card
+#if WATER_TEMP_DISPLAY
+    client.println("<div class='sensor-card'>");
+    client.println("<div class='sensor-title'>🌊 Water Temperature</div>");
+
+    client.print("<div class='sensor-value ");
+    client.print(getStatusColor(readings.waterTemperatureStatus));
+    client.print("'>");
+    if (!isnan(readings.waterTemperature))
+    {
+        client.print(readings.waterTemperature, 1);
+        client.print("<span class='sensor-unit'>°C</span>");
+    }
+    else
+    {
+        client.print("--");
+    }
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Status: ");
+    client.print(getStatusText(readings.waterTemperatureStatus));
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Last reading: ");
+    client.print(formatTimestamp(readings.waterTemperatureTimestamp));
+    client.println("</div>");
+
+    client.println("</div>");
+#endif
+
+    client.println("</div>"); // End sensor-grid
+    
+    // Quick Controls section
+    client.println("<div class='info-section'>");
+    client.println("<h3>⚡ Quick Controls</h3>");
+    client.println("<p>Set target values for your system. Changes are saved automatically and do not require a restart.</p>");
+    
+    client.println("<form id='quickControlsForm' style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;'>");
+    
+    client.println("<div>");
+    client.println("<label for='targetTDS' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Target TDS (ppm):</label>");
+    client.print("<input type='number' id='targetTDS' name='targetTDS' value='");
+    client.print(settings.targetTDS, 0);
+    client.println("' min='100' max='2000' step='10' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+    
+    client.println("<div>");
+    client.println("<label for='targetAirTemp' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Target Air Temp (°C):</label>");
+    client.print("<input type='number' id='targetAirTemp' name='targetAirTemp' value='");
+    client.print(settings.targetAirTemp, 1);
+    client.println("' min='10' max='40' step='0.5' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+    
+    client.println("<div>");
+    client.println("<label for='targetNFTResTemp' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Target NFT Res Temp (°C):</label>");
+    client.print("<input type='number' id='targetNFTResTemp' name='targetNFTResTemp' value='");
+    client.print(settings.targetNFTResTemp, 1);
+    client.println("' min='10' max='30' step='0.5' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+    
+    client.println("<div>");
+    client.println("<label for='targetDWCResTemp' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Target DWC Res Temp (°C):</label>");
+    client.print("<input type='number' id='targetDWCResTemp' name='targetDWCResTemp' value='");
+    client.print(settings.targetDWCResTemp, 1);
+    client.println("' min='10' max='30' step='0.5' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+    
+    client.println("</form>");
+    
+    client.println("<div style='text-align: center; margin-top: 15px;'>");
+    client.println("<button id='saveTargetsBtn' onclick='saveTargetValues()' style='background: #3F9E3F; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;'>Save Target Values</button>");
+    client.println("<div id='saveStatus' style='margin-top: 10px; font-weight: bold;'></div>");
+    client.println("</div>");
+    client.println("</div>");
+    
+    // JavaScript for quick controls
+    client.println("<script>");
+    client.println("function saveTargetValues() {");
+    client.println("  const btn = document.getElementById('saveTargetsBtn');");
+    client.println("  const status = document.getElementById('saveStatus');");
+    client.println("  ");
+    client.println("  btn.disabled = true;");
+    client.println("  btn.textContent = 'Saving...';");
+    client.println("  status.textContent = '';");
+    client.println("  ");
+    client.println("  const data = new URLSearchParams();");
+    client.println("  data.append('targetTDS', document.getElementById('targetTDS').value);");
+    client.println("  data.append('targetAirTemp', document.getElementById('targetAirTemp').value);");
+    client.println("  data.append('targetNFTResTemp', document.getElementById('targetNFTResTemp').value);");
+    client.println("  data.append('targetDWCResTemp', document.getElementById('targetDWCResTemp').value);");
+    client.println("  ");
+    client.println("  fetch('/quick-controls', {");
+    client.println("    method: 'POST',");
+    client.println("    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },");
+    client.println("    body: data");
+    client.println("  })");
+    client.println("  .then(response => response.text())");
+    client.println("  .then(data => {");
+    client.println("    status.innerHTML = '<span style=\"color: #3F9E3F;\">✅ Target values saved successfully!</span>';");
+    client.println("    setTimeout(() => { status.textContent = ''; }, 3000);");
+    client.println("  })");
+    client.println("  .catch(error => {");
+    client.println("    status.innerHTML = '<span style=\"color: #dc3545;\">❌ Error saving values. Please try again.</span>';");
+    client.println("  })");
+    client.println("  .finally(() => {");
+    client.println("    btn.disabled = false;");
+    client.println("    btn.textContent = 'Save Target Values';");
+    client.println("  });");
+    client.println("}");
+    client.println("</script>");
+    
+    // System info section - moved to bottom
     client.println("<div class='info-section'>");
     client.println("<h3>System Information</h3>");
     client.println("<p><strong>Device Status:</strong> Online</p>");
@@ -920,76 +1312,8 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
         client.println("<p><strong>Current Time:</strong> Time not available");
     }
     client.println("</p>");
-    client.println("</div>"); // Sensor data grid
-    client.println("<div class='sensor-grid'>");
-
-    if (!readings.hasValidData)
-    {
-        client.println("<div class='sensor-card'>");
-        client.println("<div class='sensor-title'>No Data Available</div>");
-        client.println("<p>Sensor readings will appear here once data collection begins.</p>");
-        client.println("</div>");
-    }
-    else
-    {
-        // Temperature Card
-        client.println("<div class='sensor-card'>");
-        client.println("<div class='sensor-title'>🌡️ Temperature</div>");
-
-        client.print("<div class='sensor-value ");
-        client.print(getStatusColor(readings.temperatureStatus));
-        client.print("'>");
-        if (!isnan(readings.temperature))
-        {
-            client.print(readings.temperature, 1);
-            client.print("<span class='sensor-unit'>°C</span>");
-        }
-        else
-        {
-            client.print("--");
-        }
-        client.println("</div>");
-
-        client.print("<div class='sensor-timestamp'>Status: ");
-        client.print(getStatusText(readings.temperatureStatus));
-        client.println("</div>");
-
-        client.print("<div class='sensor-timestamp'>Last reading: ");
-        client.print(formatTimestamp(readings.temperatureTimestamp));
-        client.println("</div>");
-
-        client.println("</div>");
-
-        // Humidity Card
-        client.println("<div class='sensor-card'>");
-        client.println("<div class='sensor-title'>💧 Humidity</div>");
-
-        client.print("<div class='sensor-value ");
-        client.print(getStatusColor(readings.humidityStatus));
-        client.print("'>");
-        if (!isnan(readings.humidity))
-        {
-            client.print(readings.humidity, 1);
-            client.print("<span class='sensor-unit'>%</span>");
-        }
-        else
-        {
-            client.print("--");
-        }
-        client.println("</div>");
-
-        client.print("<div class='sensor-timestamp'>Status: ");
-        client.print(getStatusText(readings.humidityStatus));
-        client.println("</div>");
-
-        client.print("<div class='sensor-timestamp'>Last reading: ");
-        client.print(formatTimestamp(readings.humidityTimestamp));
-        client.println("</div>");
-
-        client.println("</div>");
-    }
-
-    client.println("</div>"); // End sensor-grid
+    client.println("</div>"); // End system info section
+    
     client.println("</div>"); // End container
     client.println("</body></html>");
 }
@@ -1020,7 +1344,12 @@ void NetworkConnections::sendSensorDataJSON(WiFiClient &client, const LatestRead
 
     if (readings.hasValidData)
     {
-        // Temperature sensor data
+        bool firstSensor = true;
+
+// Temperature sensor data
+#if TEMP_DISPLAY
+        if (!firstSensor)
+            client.println(",");
         client.println("    {");
         client.println("      \"id\": \"Temperature\",");
         client.println("      \"type\": [\"Temperature\"],");
@@ -1041,9 +1370,14 @@ void NetworkConnections::sendSensorDataJSON(WiFiClient &client, const LatestRead
         client.print("      \"timestamp\": ");
         client.print(readings.temperatureTimestamp);
         client.println("");
-        client.println("    },");
+        client.print("    }");
+        firstSensor = false;
+#endif
 
-        // Humidity sensor data
+// Humidity sensor data
+#if HUMIDITY_DISPLAY
+        if (!firstSensor)
+            client.println(",");
         client.println("    {");
         client.println("      \"id\": \"Humidity\",");
         client.println("      \"type\": [\"Humidity\"],");
@@ -1064,7 +1398,79 @@ void NetworkConnections::sendSensorDataJSON(WiFiClient &client, const LatestRead
         client.print("      \"timestamp\": ");
         client.print(readings.humidityTimestamp);
         client.println("");
-        client.println("    }");
+        client.print("    }");
+        firstSensor = false;
+#endif
+
+// TDS sensor data
+#if TDS_DISPLAY
+        if (!firstSensor)
+            client.println(",");
+        client.println("    {");
+        client.println("      \"id\": \"TDS\",");
+        client.println("      \"type\": [\"Total Dissolved Solids\"],");
+        client.print("      \"status\": ");
+        client.print(readings.tdsStatus);
+        client.println(",");
+        client.println("      \"units\": [\"ppm\"],");
+        client.print("      \"values\": [");
+        if (!isnan(readings.tds))
+        {
+            client.print(readings.tds, 0);
+        }
+        else
+        {
+            client.print("null");
+        }
+        client.println("],");
+        client.print("      \"timestamp\": ");
+        client.print(readings.tdsTimestamp);
+        client.println("");
+        client.print("    }");
+        firstSensor = false;
+#endif
+
+// Water Temperature sensor data
+#if WATER_TEMP_DISPLAY
+        if (!firstSensor)
+            client.println(",");
+        client.println("    {");
+        client.println("      \"id\": \"WaterTemperature\",");
+        client.println("      \"type\": [\"Water Temperature\"],");
+        client.print("      \"status\": ");
+        client.print(readings.waterTemperatureStatus);
+        client.println(",");
+        client.println("      \"units\": [\"°C\"],");
+        client.print("      \"values\": [");
+        if (!isnan(readings.waterTemperature))
+        {
+            client.print(readings.waterTemperature, 2);
+        }
+        else
+        {
+            client.print("null");
+        }
+        client.println("],");
+        client.print("      \"timestamp\": ");
+        client.print(readings.waterTemperatureTimestamp);
+        client.println("");
+        client.print("    }");
+        firstSensor = false;
+#endif
+
+        if (firstSensor)
+        {
+            // If no sensors are enabled, add empty placeholder
+            client.println("    {");
+            client.println("      \"id\": \"NoSensors\",");
+            client.println("      \"type\": [\"Information\"],");
+            client.println("      \"status\": 400,");
+            client.println("      \"units\": [\"N/A\"],");
+            client.println("      \"values\": [\"No sensors enabled\"],");
+            client.println("      \"timestamp\": 0");
+            client.println("    }");
+        }
+        client.println("");
     }
 
     client.println("  ]");
@@ -1173,7 +1579,7 @@ void NetworkConnections::sendAdvancedConfigPage(WiFiClient &client, const Device
     client.println("<style>");
     client.println("label { font-size: 14px; font-weight: bold; display: block; margin-top: 15px; text-align: left; }");
     client.println("input[type='number'], input[type='text'] { width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }");
-    client.println("input:focus { border-color: #208dbf; outline: none; }");
+    client.println("input:focus { border-color: #3F9E3F; outline: none; }");
     client.println(".form-group { margin-bottom: 15px; }");
     client.println(".form-row { display: flex; gap: 10px; }");
     client.println(".form-row .form-group { flex: 1; }");
@@ -1261,12 +1667,50 @@ void NetworkConnections::sendAdvancedConfigPage(WiFiClient &client, const Device
     client.println("</div>");
     client.println("</div>");
 
+    // Target Values section
+    client.println("<h3 style='margin-top: 30px; color: #3F9E3F;'>Target Values</h3>");
+    client.println("<div class='form-row'>");
+    client.println("<div class='form-group'>");
+    client.println("<label for='targetTDS'>Target TDS (ppm):</label>");
+    client.print("<input type='number' id='targetTDS' name='targetTDS' value='");
+    client.print(settings.targetTDS, 0);
+    client.println("' min='100' max='2000' step='10' required>");
+    client.println("<div class='help-text'>Target Total Dissolved Solids value</div>");
+    client.println("</div>");
+
+    client.println("<div class='form-group'>");
+    client.println("<label for='targetAirTemp'>Target Air Temperature (°C):</label>");
+    client.print("<input type='number' id='targetAirTemp' name='targetAirTemp' value='");
+    client.print(settings.targetAirTemp, 1);
+    client.println("' min='10' max='40' step='0.5' required>");
+    client.println("<div class='help-text'>Target ambient air temperature</div>");
+    client.println("</div>");
+    client.println("</div>");
+
+    client.println("<div class='form-row'>");
+    client.println("<div class='form-group'>");
+    client.println("<label for='targetNFTResTemp'>Target NFT Reservoir Temperature (°C):</label>");
+    client.print("<input type='number' id='targetNFTResTemp' name='targetNFTResTemp' value='");
+    client.print(settings.targetNFTResTemp, 1);
+    client.println("' min='10' max='30' step='0.5' required>");
+    client.println("<div class='help-text'>Target NFT reservoir water temperature</div>");
+    client.println("</div>");
+
+    client.println("<div class='form-group'>");
+    client.println("<label for='targetDWCResTemp'>Target DWC Reservoir Temperature (°C):</label>");
+    client.print("<input type='number' id='targetDWCResTemp' name='targetDWCResTemp' value='");
+    client.print(settings.targetDWCResTemp, 1);
+    client.println("' min='10' max='30' step='0.5' required>");
+    client.println("<div class='help-text'>Target DWC reservoir water temperature</div>");
+    client.println("</div>");
+    client.println("</div>");
+
     client.println("<button type='submit' id='submitButton'>Save Settings & Restart</button>");
     client.println("</form>");
 
     // Navigation back
     client.println("<div style='margin-top: 20px; text-align: center;'>");
-    client.println("<a href='/' style='text-decoration: none; color: #208dbf;'>← Back to Dashboard</a>");
+    client.println("<a href='/' style='text-decoration: none; color: #3F9E3F;'>🏠 Back to Dashboard</a>");
     client.println("</div>");
 
     sendPageFooter(client);
@@ -1345,8 +1789,45 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
     {
         idCodeStart += 7; // Move past "idCode="
         String idCodeStr = request.substring(idCodeStart);
+        idCodeStr = idCodeStr.substring(0, idCodeStr.indexOf("&") != -1 ? idCodeStr.indexOf("&") : idCodeStr.length());
         newSettings.idCode = urlDecode(idCodeStr);
         newSettings.idCode.replace("+", " ");
+    }
+
+    // Parse target values
+    int targetTDSStart = request.indexOf("targetTDS=");
+    if (targetTDSStart != -1)
+    {
+        targetTDSStart += 10; // Move past "targetTDS="
+        String targetTDSStr = request.substring(targetTDSStart);
+        targetTDSStr = targetTDSStr.substring(0, targetTDSStr.indexOf("&") != -1 ? targetTDSStr.indexOf("&") : targetTDSStr.length());
+        newSettings.targetTDS = targetTDSStr.toFloat();
+    }
+
+    int targetAirTempStart = request.indexOf("targetAirTemp=");
+    if (targetAirTempStart != -1)
+    {
+        targetAirTempStart += 14; // Move past "targetAirTemp="
+        String targetAirTempStr = request.substring(targetAirTempStart);
+        targetAirTempStr = targetAirTempStr.substring(0, targetAirTempStr.indexOf("&") != -1 ? targetAirTempStr.indexOf("&") : targetAirTempStr.length());
+        newSettings.targetAirTemp = targetAirTempStr.toFloat();
+    }
+
+    int targetNFTResTempStart = request.indexOf("targetNFTResTemp=");
+    if (targetNFTResTempStart != -1)
+    {
+        targetNFTResTempStart += 17; // Move past "targetNFTResTemp="
+        String targetNFTResTempStr = request.substring(targetNFTResTempStart);
+        targetNFTResTempStr = targetNFTResTempStr.substring(0, targetNFTResTempStr.indexOf("&") != -1 ? targetNFTResTempStr.indexOf("&") : targetNFTResTempStr.length());
+        newSettings.targetNFTResTemp = targetNFTResTempStr.toFloat();
+    }
+
+    int targetDWCResTempStart = request.indexOf("targetDWCResTemp=");
+    if (targetDWCResTempStart != -1)
+    {
+        targetDWCResTempStart += 17; // Move past "targetDWCResTemp="
+        String targetDWCResTempStr = request.substring(targetDWCResTempStart);
+        newSettings.targetDWCResTemp = targetDWCResTempStr.toFloat();
     }
 
     Serial.println("Parsed Settings:");
@@ -1363,13 +1844,29 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
     Serial.println(newSettings.deviceID);
     Serial.print("ID Code: ");
     Serial.println(newSettings.idCode);
+    Serial.print("Target TDS: ");
+    Serial.print(newSettings.targetTDS);
+    Serial.println(" ppm");
+    Serial.print("Target Air Temp: ");
+    Serial.print(newSettings.targetAirTemp);
+    Serial.println("°C");
+    Serial.print("Target NFT Res Temp: ");
+    Serial.print(newSettings.targetNFTResTemp);
+    Serial.println("°C");
+    Serial.print("Target DWC Res Temp: ");
+    Serial.print(newSettings.targetDWCResTemp);
+    Serial.println("°C");
 
     // Validate settings
     bool isValid = (newSettings.sleepDuration >= 5000000ULL && newSettings.sleepDuration <= 3600000000ULL) &&
                    (newSettings.sensorReadInterval >= 1000 && newSettings.sensorReadInterval <= 3600000) &&
                    (newSettings.sensorStabilizationTime <= 600000) &&
                    (newSettings.deviceID.length() > 0 && newSettings.deviceID.length() <= 20) &&
-                   (newSettings.idCode.length() > 0 && newSettings.idCode.length() <= 16);
+                   (newSettings.idCode.length() > 0 && newSettings.idCode.length() <= 16) &&
+                   (newSettings.targetTDS >= 100 && newSettings.targetTDS <= 2000) &&
+                   (newSettings.targetAirTemp >= 10 && newSettings.targetAirTemp <= 40) &&
+                   (newSettings.targetNFTResTemp >= 10 && newSettings.targetNFTResTemp <= 30) &&
+                   (newSettings.targetDWCResTemp >= 10 && newSettings.targetDWCResTemp <= 30);
 
     if (isValid)
     {
@@ -1635,4 +2132,148 @@ bool NetworkConnections::publishSensorData(const SensorDataManager &dataManager,
 
     // Return true if at least some data was sent successfully
     return successCount > 0;
+}
+
+void NetworkConnections::processQuickControls(WiFiClient &client, String request)
+{
+    Serial.println("Received Quick Controls Request:");
+    Serial.println(request);
+
+    // Extract the POST body
+    int bodyIndex = request.indexOf("\r\n\r\n");
+    if (bodyIndex == -1)
+    {
+        Serial.println("Error: Could not locate POST body.");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+    request = request.substring(bodyIndex + 4);
+
+    Serial.println("Extracted POST Body:");
+    Serial.println(request);
+
+    // Parse target values from form data
+    float targetTDS = 500.0;
+    float targetAirTemp = 25.0;
+    float targetNFTResTemp = 18.0;
+    float targetDWCResTemp = 18.0;
+
+    // Parse targetTDS
+    int tdsStart = request.indexOf("targetTDS=");
+    if (tdsStart != -1)
+    {
+        tdsStart += 10; // Move past "targetTDS="
+        int tdsEnd = request.indexOf("&", tdsStart);
+        if (tdsEnd == -1) tdsEnd = request.length();
+        String tdsStr = request.substring(tdsStart, tdsEnd);
+        tdsStr = urlDecode(tdsStr);
+        targetTDS = tdsStr.toFloat();
+        Serial.printf("Found targetTDS: '%s' -> %.1f\n", tdsStr.c_str(), targetTDS);
+    }
+    else
+    {
+        Serial.println("targetTDS not found in request");
+    }
+
+    // Parse targetAirTemp
+    int airTempStart = request.indexOf("targetAirTemp=");
+    if (airTempStart != -1)
+    {
+        airTempStart += 14; // Move past "targetAirTemp="
+        int airTempEnd = request.indexOf("&", airTempStart);
+        if (airTempEnd == -1) airTempEnd = request.length();
+        String airTempStr = request.substring(airTempStart, airTempEnd);
+        airTempStr = urlDecode(airTempStr);
+        targetAirTemp = airTempStr.toFloat();
+        Serial.printf("Found targetAirTemp: '%s' -> %.1f\n", airTempStr.c_str(), targetAirTemp);
+    }
+    else
+    {
+        Serial.println("targetAirTemp not found in request");
+    }
+
+    // Parse targetNFTResTemp
+    int nftTempStart = request.indexOf("targetNFTResTemp=");
+    if (nftTempStart != -1)
+    {
+        nftTempStart += 17; // Move past "targetNFTResTemp="
+        int nftTempEnd = request.indexOf("&", nftTempStart);
+        if (nftTempEnd == -1) nftTempEnd = request.length();
+        String nftTempStr = request.substring(nftTempStart, nftTempEnd);
+        targetNFTResTemp = nftTempStr.toFloat();
+    }
+
+    // Parse targetDWCResTemp
+    int dwcTempStart = request.indexOf("targetDWCResTemp=");
+    if (dwcTempStart != -1)
+    {
+        dwcTempStart += 17; // Move past "targetDWCResTemp="
+        int dwcTempEnd = request.indexOf("&", dwcTempStart);
+        if (dwcTempEnd == -1) dwcTempEnd = request.length();
+        String dwcTempStr = request.substring(dwcTempStart, dwcTempEnd);
+        targetDWCResTemp = dwcTempStr.toFloat();
+    }
+
+    // Debug: Show parsed values
+    Serial.printf("Parsed values - TDS: %.1f, Air: %.1f, NFT: %.1f, DWC: %.1f\n", 
+                  targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
+
+    // Validate ranges
+    if (targetTDS < 100 || targetTDS > 2000)
+    {
+        Serial.println("Error: Invalid TDS value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (targetAirTemp < 10 || targetAirTemp > 40)
+    {
+        Serial.println("Error: Invalid Air Temperature value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (targetNFTResTemp < 10 || targetNFTResTemp > 30)
+    {
+        Serial.println("Error: Invalid NFT Reservoir Temperature value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (targetDWCResTemp < 10 || targetDWCResTemp > 30)
+    {
+        Serial.println("Error: Invalid DWC Reservoir Temperature value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    // Save target values to NVS
+    saveTargetValues(targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
+
+    // Update global state values
+    state.targetTDS = targetTDS;
+    state.Target_Air_Temp = targetAirTemp;
+    state.Target_NFT_Res_Temp = targetNFTResTemp;
+    state.Target_DWC_Res_Temp = targetDWCResTemp;
+
+    // Send success response
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain");
+    client.println("Connection: close");
+    client.println();
+    client.println("Target values saved successfully");
+
+    Serial.println("Quick controls processed successfully");
+    Serial.printf("New values - TDS: %.1f ppm, Air: %.1f°C, NFT: %.1f°C, DWC: %.1f°C\n", 
+                  targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
 }

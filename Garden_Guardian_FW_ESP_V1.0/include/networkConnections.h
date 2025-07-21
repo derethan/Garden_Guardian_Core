@@ -38,7 +38,14 @@ struct DeviceSettings
     unsigned long ntpRetryInterval = 3600000;      // 1 hour between NTP retry attempts (milliseconds)
     bool httpPublishEnabled = true;                // Enable HTTP data publishing
     unsigned long httpPublishInterval = 300000;    // 5 minutes between HTTP publications (milliseconds)
-    bool valid = false;                            // Indicates if settings were loaded successfully
+    
+    // Target Values - Configurable and stored in NVS
+    float targetTDS = 500.0;               // Target TDS value in ppm
+    float targetAirTemp = 25.0;            // Target air temperature in °C
+    float targetNFTResTemp = 18.0;         // Target NFT reservoir temperature in °C
+    float targetDWCResTemp = 18.0;         // Target DWC reservoir temperature in °C
+    
+    bool valid = false;                    // Indicates if settings were loaded successfully
 };
 
 extern int wifiStatus;
@@ -62,10 +69,11 @@ private:
     void sendHTMLHeader(WiFiClient &client, const char *title);
     void sendPageHeader(WiFiClient &client);
     void sendPageFooter(WiFiClient &client); // Sensor data web server methods
-    void sendSensorDataPage(WiFiClient &client, const LatestReadings &readings);
+    void sendSensorDataPage(WiFiClient &client, const LatestReadings &readings, const DeviceSettings &settings);
     void sendSensorDataJSON(WiFiClient &client, const LatestReadings &readings);
     void sendAdvancedConfigPage(WiFiClient &client, const DeviceSettings &settings);
     void processAdvancedConfig(WiFiClient &client, String request);
+    void processQuickControls(WiFiClient &client, String request);
     String formatTimestamp(unsigned long timestamp);
     String getStatusText(int status);
     String getStatusColor(int status);
@@ -73,6 +81,7 @@ private:
 public:
     WiFiCredentials loadWiFiCredentials(); // New function
     DeviceSettings loadDeviceSettings();   // New function for loading device settings
+    void saveTargetValues(float targetTDS, float targetAirTemp, float targetNFTResTemp, float targetDWCResTemp); // New function for saving target values
 
     void setupWiFi(WiFiCredentials credentials, String idCode, bool apON); // Modified to accept credentials
     bool connectToNetwork(String ssid, String password);

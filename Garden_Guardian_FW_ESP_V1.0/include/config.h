@@ -7,6 +7,12 @@
 #define DEVICE_ID "GG-"
 #define IDCODE "00000001" // Unique device identifier
 
+// Web Display Configuration Flags
+#define TEMP_DISPLAY false
+#define HUMIDITY_DISPLAY false
+#define TDS_DISPLAY true
+#define WATER_TEMP_DISPLAY false
+
 // Defined Relay pins
 #define RELAY1_PIN 26
 #define RELAY2_PIN 25

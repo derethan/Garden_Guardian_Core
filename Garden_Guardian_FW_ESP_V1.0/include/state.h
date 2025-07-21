@@ -20,8 +20,8 @@ struct SystemState
 {
 
     // Global Device Information
-    String deviceID;
-    String idCode;
+    String deviceID = DEVICE_ID; // Will be overridden by config
+    String idCode = IDCODE;      // Will be overridden by config
     SystemMode currentMode = SystemMode::INITIALIZING;
 
     // Sleep settings
@@ -42,6 +42,7 @@ struct SystemState
     uint32_t lastTimeSyncEpoch = 0;
     unsigned long currentTime = 0;
     uint32_t lastErrorTime = 0;
+    unsigned long lastReadingTime = 0;
 
     // Error Handling
     String lastErrorMessage = "";
@@ -75,9 +76,11 @@ struct SystemState
     float Target_Air_Temp = 25;
 
     float tdsValue = 0;
-    float targetTDS = 500;     // Default target TDS value
+    float targetTDS = 500;     // Target TDS value - will be loaded from NVS
     float tdsHysteresis = 100; // Hysteresis for TDS control
+};
 
-} state;
+// Global state variable declaration
+extern SystemState state;
 
 #endif // SystemState_H

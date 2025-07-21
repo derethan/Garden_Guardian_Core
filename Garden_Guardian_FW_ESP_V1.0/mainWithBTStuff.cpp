@@ -1,4 +1,9 @@
 #include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEClient.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
 #include "esp_task_wdt.h"
 
 #include "secrets.h"
@@ -16,6 +21,16 @@ SystemState state;
 #include "dataProvider.h"
 #include "tempSensors.h"
 #include "tdsSensor.h"
+
+// BLE State structure
+struct BLEState
+{
+  BLEClient *client = nullptr;
+  BLERemoteService *remoteService = nullptr;
+  BLERemoteCharacteristic *tempCharacteristic = nullptr;
+  BLERemoteCharacteristic *humidityCharacteristic = nullptr;
+  BLEScan *scanner = nullptr;
+} bleState;
 
 /*****************************************
  * Global Objects
@@ -44,6 +59,10 @@ TDSSensor tdsSensor(TDS_SENSOR_PIN, VREF, SCOUNT);
 /*****************************************
  * Forward Declarations
  *****************************************/
+bool initializeBLE();
+bool scanAndConnectDevice();
+bool setupSensorCharacteristics();
+bool readBTSensorData();
 void readSensorData();
 void setupNetwork();
 bool readTempData();
@@ -67,7 +86,7 @@ void loadDeviceSettings()
     state.idCode = settings.idCode;
     state.httpPublishEnabled = settings.httpPublishEnabled;
     state.httpPublishInterval = settings.httpPublishInterval;
-
+    
     // Apply target values
     state.targetTDS = settings.targetTDS;
     state.Target_Air_Temp = settings.targetAirTemp;
@@ -127,6 +146,156 @@ void logError(const char *message)
     Serial.print("ERROR: ");
     Serial.println(message);
   }
+}
+
+/*****************************************
+ * Bluetooth Functions
+ *****************************************/
+
+bool initializeBLE()
+{
+  BLEDevice::init("");
+  bleState.scanner = BLEDevice::getScan();
+
+  if (bleState.scanner != nullptr)
+  {
+    bleState.scanner->setActiveScan(true);
+    bleState.scanner->setInterval(1349);
+    bleState.scanner->setWindow(449);
+    Serial.println("BLE Scanner initialized successfully");
+    return true;
+  }
+  Serial.println("Failed to initialize BLE Scanner");
+  return false;
+}
+
+bool setupSensorCharacteristics()
+{
+  bleState.remoteService = bleState.client->getService(BLEUUID(SERVICE_UUID));
+  if (bleState.remoteService == nullptr)
+  {
+    Serial.println("Failed to find service");
+    return false;
+  }
+
+  bleState.tempCharacteristic = bleState.remoteService->getCharacteristic(BLEUUID(TEMP_CHAR_UUID));
+  bleState.humidityCharacteristic = bleState.remoteService->getCharacteristic(BLEUUID(HUMIDITY_CHAR_UUID));
+
+  if (bleState.tempCharacteristic == nullptr || bleState.humidityCharacteristic == nullptr)
+  {
+    Serial.println("Failed to find characteristics");
+    return false;
+  }
+
+  return true;
+}
+
+bool scanAndConnectDevice()
+{
+  if (bleState.scanner == nullptr)
+  {
+    Serial.println("Error: BLE Scanner not initialized");
+    return false;
+  }
+
+  try
+  {
+    bleState.client = BLEDevice::createClient();
+    delay(1000);
+
+    BLEScanResults scanResults = bleState.scanner->start(3, false);
+    // Serial.printf("Scan complete. Found %d devices\n", scanResults.getCount());
+    yield();
+
+    for (int i = 0; i < scanResults.getCount(); i++)
+    {
+      esp_task_wdt_reset();
+      BLEAdvertisedDevice device = scanResults.getDevice(i);
+
+      if (device.getName() == "GG-ENV")
+      {
+        if (!bleState.client->connect(&device))
+        {
+          Serial.println("Connection failed");
+          continue;
+        }
+
+        Serial.println("Connected to device");
+        if (setupSensorCharacteristics())
+        {
+          Serial.println("Connected to GG-ENV successfully");
+          bleState.scanner->clearResults();
+          return true;
+        }
+
+        bleState.client->disconnect();
+      }
+      yield();
+      delay(100);
+    }
+    bleState.scanner->clearResults();
+  }
+  catch (const std::exception &e)
+  {
+    Serial.println("Error during BLE operations");
+    if (bleState.client != nullptr)
+    {
+      delete bleState.client;
+      bleState.client = nullptr;
+    }
+  }
+  return false;
+}
+
+// ToDo: This function will need to be adapted to a general read from BT Devices function
+bool readBTSensorData()
+{
+  esp_task_wdt_reset();
+
+  if (bleState.client == nullptr || !bleState.client->isConnected() ||
+      bleState.tempCharacteristic == nullptr || bleState.humidityCharacteristic == nullptr)
+  {
+    Serial.println("Error: BLE connection not established");
+    if (bleState.client != nullptr)
+    {
+      bleState.client->disconnect();
+      delete bleState.client;
+      bleState.client = nullptr;
+    }
+    return false;
+  }
+
+  if (bleState.tempCharacteristic->canRead())
+  {
+    std::string tempRawValue = bleState.tempCharacteristic->readValue();
+    std::string humRawValue = bleState.humidityCharacteristic->readValue();
+
+    if (tempRawValue.length() > 0 && humRawValue.length() > 0)
+    {
+      float temperature = atof(tempRawValue.c_str());
+      float humidity = atof(humRawValue.c_str());
+
+      if (temperature < -40 || temperature > 80 || humidity < 0 || humidity > 100)
+      {
+        Serial.println("Invalid data received");
+        return false;
+      }
+
+      // Add sensor data to the list, first create a sensorData object
+      sensorData.addSensorData({.sensorID = "GG-TH1",
+                                .sensorType = {"Temperature", "Humidity"},
+                                .status = 0,
+                                .unit = {"Celsius", "Percentage"},
+                                .timestamp = state.currentTime,
+                                .values = {temperature, humidity}});
+
+      return true;
+    }
+    Serial.println("No data received from sensor");
+    return false;
+  }
+  Serial.println("Cannot read characteristics");
+  return false;
 }
 
 void setupNetwork()
@@ -257,7 +426,7 @@ bool readTDSData()
     logError("Sensor Error from readTDSData (): Invalid TDS reading");
     state.sensorError = true;
     state.lastErrorTime = millis();
-    status = status;                   // Update status to indicate error
+    status = status;                      // Update status to indicate error
     latestReadings.tdsStatus = status; // Update latest readings status
 
     return false;
@@ -293,6 +462,14 @@ void setup()
 
   TDSController.initialize(); // Initialize TDS Controller Relay
 
+  // // Initialize BLE Module
+  // if (!initializeBLE())
+  // {
+  //   state.currentMode = SystemMode::ERROR;
+  //   return;
+  // }
+  // Serial.println("BLE Initialized");
+
   // Load and apply device settings BEFORE network initialization
   loadDeviceSettings();
 
@@ -318,10 +495,6 @@ void loop()
       state.currentTime = network.getRTCTime();
       state.lastTimeSyncEpoch = state.currentTime;
 
-      // Perform a initial Sensor Read
-      Serial.println("[SYSTEM] Initial sensor read...");
-      readSensorData();
-
       // Start web server when connected to WiFi
       network.startWebServer();
     }
@@ -344,6 +517,23 @@ void loop()
     {
       state.currentTime = millis();
     }
+
+    // Check if BLE connection is active, if not, try to connect
+    // if (bleState.client == nullptr)
+    // {
+    //   Serial.println("----- BLE Reconnection Status -----");
+    //   if (!scanAndConnectDevice())
+    //   {
+    //     delay(100);
+
+    //     Serial.println("Failed to reconnect to BLE device");
+    //     Serial.println("---------------------------------");
+    //     return;
+    //   }
+    //   Serial.println("BLE Reconnection Established");
+    //   delay(100);
+    //   Serial.println("---------------------------------");
+    // }
 
     // Debug time tracking parameters
     if (DEBUG_MODE && (state.currentTime % 30 == 0)) // Print every ~10 seconds
@@ -420,6 +610,15 @@ void loop()
         // sensorData.resetSensorData();
       }
 
+      // Read Data from connected Bluetooth Devices
+      // if (readBTSensorData())
+      // {
+      //   Serial.println("BLE Device connected: Data from BLE Device read successfully");
+      // }
+      // else
+      // {
+      //   Serial.println("No BLE Device Connected: Skipping Data Read");
+      // }
       state.lastSensorRead = state.currentTime;
     }
 

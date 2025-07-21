@@ -11,7 +11,7 @@ struct sensorData
 {
     String sensorID;                // Unique identifier for the sensor
     std::vector<String> sensorType; // Array of sensor types (e.g., Temp, NPK)
-    int status;                     // 200 = OK, 300 = Warning, 400 = Error
+    int status;                     // 0 = OK, 1 = Warning, 2 = Error
     std::vector<String> unit;       // Array of units of measurement
     unsigned long timestamp;        // Timestamp of the reading
     std::vector<float> values;      // Vector to store multiple values
@@ -51,6 +51,9 @@ public:
 
     // Get all sensor data
     const std::vector<sensorData> &getAllSensorData() const;
+
+    // Get count of sensor data items
+    size_t getSensorDataCount() const;
 
     // Find sensor by ID
     bool findSensorById(const String &sensorId, sensorData &result) const;

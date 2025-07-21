@@ -92,7 +92,7 @@ void loadDeviceSettings()
 {
   // Create device-specific settings applier
   TempHumDeviceSettingsApplier applier(state);
-  
+
   // Use the base configuration system to load and apply settings
   BaseConfig::loadAndApplyDeviceSettings(network, &applier);
 }
@@ -426,9 +426,8 @@ void loop()
       state.lastSensorRead = state.currentTime;
     }
 
-    // network.processDNSRequests();
-
     // Process DNS first
+    // network.processDNSRequests();
     network.handleClientRequestsWithSensorData(latestReadings);
     break;
   }

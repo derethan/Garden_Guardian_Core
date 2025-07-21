@@ -1,4 +1,5 @@
 #include "relayControl.h"
+#include "config.h"
 
 // Constructor
 RelayControl::RelayControl(uint8_t relayPin, float hysteresis)
@@ -18,7 +19,11 @@ void RelayControl::initialize()
 {
     pinMode(relayPin, OUTPUT);
     turnOn(); // This sets the physical relay ON and relayState = true
-    Serial.println("Relay initialized - Pin: " + String(relayPin) + ", State: " + String(relayState ? "ON" : "OFF"));
+
+    if (DEBUG_MODE)
+    {
+        Serial.println("Relay initialized - Pin: " + String(relayPin) + ", State: " + String(relayState ? "ON" : "OFF"));
+    }
 }
 
 void RelayControl::turnOff()
@@ -232,7 +237,7 @@ void RelayControl::setAutoFeedingSystem(float tdsValue, float targetTDS, unsigne
     float feedingThreshold = targetTDS;
     Serial.println("Feeding threshold: " + String(feedingThreshold) + " PPM");
     Serial.println("TDS comparison: " + String(tdsValue) + " < " + String(feedingThreshold) + " = " + String(tdsValue < feedingThreshold ? "TRUE" : "FALSE"));
-    
+
     if (tdsValue < feedingThreshold)
     {
         Serial.println("TDS below target (with hysteresis) - starting feeding cycle");

@@ -39,6 +39,12 @@ const std::vector<sensorData> &SensorDataManager::getAllSensorData() const
     return sensorDataList;
 }
 
+// Get count of sensor data items
+size_t SensorDataManager::getSensorDataCount() const
+{
+    return sensorDataList.size();
+}
+
 // Find sensor by ID
 bool SensorDataManager::findSensorById(const String &sensorId, sensorData &result) const
 {
