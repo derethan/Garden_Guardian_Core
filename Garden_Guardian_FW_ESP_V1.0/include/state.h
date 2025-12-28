@@ -78,6 +78,10 @@ struct SystemState
     float tdsValue = 0;
     float targetTDS = 500;     // Target TDS value - will be loaded from NVS
     float tdsHysteresis = 100; // Hysteresis for TDS control
+
+    // Serial Mode tracking
+    SystemMode previousMode = SystemMode::INITIALIZING; // Track mode before entering SERIAL_MODE
+    unsigned long serialModeStartTime = 0;
 };
 
 // Global state variable declaration

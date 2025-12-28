@@ -1,6 +1,5 @@
 #include "relayControl.h"
 #include "config.h"
-#include "base/sysLogs.h"
 
 // Constructor
 RelayControl::RelayControl(uint8_t relayPin, float hysteresis)
@@ -21,19 +20,24 @@ void RelayControl::initialize()
     pinMode(relayPin, OUTPUT);
     turnOn(); // This sets the physical relay ON and relayState = true
 
-    SysLogs::logInfo("RELAY", "Relay initialized - Pin: " + String(relayPin) + ", State: " + String(relayState ? "ON" : "OFF"));
+    if (DEBUG_MODE)
+    {
+        Serial.println("Relay initialized - Pin: " + String(relayPin) + ", State: " + String(relayState ? "ON" : "OFF"));
+    }
 }
 
 void RelayControl::turnOff()
 {
     digitalWrite(relayPin, HIGH);
     relayState = false;
+    Serial.println("Relay Pin " + String(relayPin) + " turned OFF");
 }
 
 void RelayControl::turnOn()
 {
     digitalWrite(relayPin, LOW);
     relayState = true;
+    Serial.println("Relay Pin " + String(relayPin) + " turned ON");
 }
 
 bool RelayControl::isOn()
@@ -46,7 +50,7 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
 {
     if (manualOverride)
     {
-        SysLogs::logInfo("RELAY", "Manual override is active, skipping timed interval check.");
+        Serial.println("Manual override is active, skipping timed interval check.");
         return;
     }
 
@@ -57,7 +61,7 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
     if (previousMillis == 0)
     {
         previousMillis = currentTime;
-        SysLogs::logInfo("RELAY", "Initializing previousMillis to current time.");
+        Serial.println("Initializing previousMillis to current time.");
     }
 
     // Check if the relay is on
@@ -71,11 +75,11 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
             // Reset the previous millis
             previousMillis = currentTime;
             // Debug
-            SysLogs::logInfo("RELAY", "Turning off relay after on interval.");
+            Serial.println("Turning off relay after on interval.");
         }
         else
         {
-            SysLogs::logInfo("RELAY", "Relay is on, waiting for on interval to complete.");
+            Serial.println("Relay is on, waiting for on interval to complete.");
         }
     }
     else
@@ -88,11 +92,11 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
             // Reset the previous millis
             previousMillis = currentTime;
             // Debug
-            SysLogs::logInfo("RELAY", "Turning on relay after off interval.");
+            Serial.println("Turning on relay after off interval.");
         }
         else
         {
-            SysLogs::logInfo("RELAY", "Relay is off, waiting for off interval to complete.");
+            Serial.println("Relay is off, waiting for off interval to complete.");
         }
     }
 }
@@ -100,8 +104,6 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
 // Set the relay based on the temperature
 void RelayControl::setRelayforTemp(float temperature, float targetTemperature)
 {
-    // Enhanced debugging - always print temperature check info
-    SysLogs::logInfo("RELAY", "Temperature Check - Current: " + String(temperature) + "°C, Target: " + String(targetTemperature) + "°C, Relay State: " + String(relayState ? "ON" : "OFF") + ", Manual Override: " + String(manualOverride ? "ACTIVE" : "INACTIVE"));
     if (manualOverride)
         return;
 
@@ -124,47 +126,52 @@ void RelayControl::setRelayforTemp(float temperature, float targetTemperature)
 // Set the relay based on the schedule
 void RelayControl::setRelayForSchedule(int onHour, int offHour, String currentTime)
 {
-    // Enhanced debugging
-SysLogs::logInfo("RELAY", "Schedule Check - On Hour: " + String(onHour) + ", Off Hour: " + String(offHour) + ", Current Time: " + currentTime + ", Relay State: " + String(relayState ? "ON" : "OFF") + ", Manual Override: " + String(manualOverride ? "ACTIVE" : "INACTIVE"));
+    // Enhanced debugging - always print schedule check info
+    Serial.println("--- Relay Schedule Check ---");
+    Serial.println("Current Time: " + currentTime);
+    Serial.println("Schedule: ON at " + String(onHour) + ":00, OFF at " + String(offHour) + ":00");
+    Serial.println("Current Relay State: " + String(relayState ? "ON" : "OFF"));
+    Serial.println("Manual Override: " + String(manualOverride ? "ACTIVE" : "INACTIVE"));
 
     if (manualOverride)
     {
-        SysLogs::logInfo("RELAY", "Manual override is active - skipping schedule control");
-        SysLogs::logInfo("RELAY", "---------------------------");
+        Serial.println("Manual override is active - skipping schedule control");
+        Serial.println("---------------------------");
         return;
     }
 
     // Current time comes in like 14:58:59, extract parameters
     int currentHour = currentTime.substring(0, 2).toInt();
+    Serial.println("Extracted current hour: " + String(currentHour));
 
     if (currentHour >= onHour && currentHour < offHour)
     {
-        SysLogs::logInfo("RELAY", "Time is within schedule period (" + String(onHour) + ":00 - " + String(offHour) + ":00)");
+        Serial.println("Time is within schedule period (" + String(onHour) + ":00 - " + String(offHour) + ":00)");
         if (!relayState)
         {
-            SysLogs::logInfo("RELAY", "Relay is OFF - turning ON for schedule");
+            Serial.println("Relay is OFF - turning ON for schedule");
             turnOn();
         }
         else
         {
-            SysLogs::logInfo("RELAY", "Relay is already ON - no action needed");
+            Serial.println("Relay is already ON - no action needed");
         }
     }
     else
     {
-        SysLogs::logInfo("RELAY", "Time is outside schedule period (" + String(onHour) + ":00 - " + String(offHour) + ":00)");
+        Serial.println("Time is outside schedule period (" + String(onHour) + ":00 - " + String(offHour) + ":00)");
         if (relayState)
         {
-            SysLogs::logInfo("RELAY", "Relay is ON - turning OFF (outside schedule)");
+            Serial.println("Relay is ON - turning OFF (outside schedule)");
             turnOff();
         }
         else
         {
-            SysLogs::logInfo("RELAY", "Relay is already OFF - no action needed");
+            Serial.println("Relay is already OFF - no action needed");
         }
     }
-    SysLogs::logInfo("RELAY", "Final Relay State: " + String(relayState ? "ON" : "OFF"));
-    SysLogs::logInfo("RELAY", "---------------------------");
+    Serial.println("Final Relay State: " + String(relayState ? "ON" : "OFF"));
+    Serial.println("---------------------------");
 }
 
 /*******

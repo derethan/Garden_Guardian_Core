@@ -46,7 +46,7 @@ TDSSensor tdsSensor(TDS_SENSOR_PIN, VREF, SCOUNT);
  *****************************************/
 void readSensorData();
 void setupNetwork();
-bool readTempData();
+// bool readTempData();
 bool readTDSData();
 
 /*****************************************
