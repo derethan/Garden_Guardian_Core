@@ -1,4 +1,6 @@
 #include "relayControl.h"
+#include "config.h"
+#include "base/sysLogs.h"
 
 // Constructor
 RelayControl::RelayControl(uint8_t relayPin, float hysteresis)
@@ -17,19 +19,21 @@ bool RelayControl::isManualOverride()
 void RelayControl::initialize()
 {
     pinMode(relayPin, OUTPUT);
-    turnOff();
-}
+    turnOn(); // This sets the physical relay ON and relayState = true
 
-void RelayControl::turnOn()
-{
-    digitalWrite(relayPin, LOW);
-    relayState = true;
+    SysLogs::logInfo("RELAY", "Relay initialized - Pin: " + String(relayPin) + ", State: " + String(relayState ? "ON" : "OFF"));
 }
 
 void RelayControl::turnOff()
 {
     digitalWrite(relayPin, HIGH);
     relayState = false;
+}
+
+void RelayControl::turnOn()
+{
+    digitalWrite(relayPin, LOW);
+    relayState = true;
 }
 
 bool RelayControl::isOn()
@@ -42,7 +46,7 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
 {
     if (manualOverride)
     {
-        Serial.println("Manual override is active, skipping timed interval check.");
+        SysLogs::logInfo("RELAY", "Manual override is active, skipping timed interval check.");
         return;
     }
 
@@ -53,7 +57,7 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
     if (previousMillis == 0)
     {
         previousMillis = currentTime;
-        Serial.println("Initializing previousMillis to current time.");
+        SysLogs::logInfo("RELAY", "Initializing previousMillis to current time.");
     }
 
     // Check if the relay is on
@@ -67,12 +71,12 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
             // Reset the previous millis
             previousMillis = currentTime;
             // Debug
-            Serial.println("Turning off relay after on interval.");
+            SysLogs::logInfo("RELAY", "Turning off relay after on interval.");
         }
-        // else
-        // {
-        //     Serial.println("Relay is on, waiting for on interval to complete.");
-        // }
+        else
+        {
+            SysLogs::logInfo("RELAY", "Relay is on, waiting for on interval to complete.");
+        }
     }
     else
     {
@@ -84,18 +88,20 @@ void RelayControl::setRelayForTimedIntervals(int onInterval, int offInterval)
             // Reset the previous millis
             previousMillis = currentTime;
             // Debug
-            Serial.println("Turning on relay after off interval.");
+            SysLogs::logInfo("RELAY", "Turning on relay after off interval.");
         }
-        // else
-        // {
-        //     Serial.println("Relay is off, waiting for off interval to complete.");
-        // }
+        else
+        {
+            SysLogs::logInfo("RELAY", "Relay is off, waiting for off interval to complete.");
+        }
     }
 }
 
 // Set the relay based on the temperature
 void RelayControl::setRelayforTemp(float temperature, float targetTemperature)
 {
+    // Enhanced debugging - always print temperature check info
+    SysLogs::logInfo("RELAY", "Temperature Check - Current: " + String(temperature) + "°C, Target: " + String(targetTemperature) + "°C, Relay State: " + String(relayState ? "ON" : "OFF") + ", Manual Override: " + String(manualOverride ? "ACTIVE" : "INACTIVE"));
     if (manualOverride)
         return;
 
@@ -118,68 +124,130 @@ void RelayControl::setRelayforTemp(float temperature, float targetTemperature)
 // Set the relay based on the schedule
 void RelayControl::setRelayForSchedule(int onHour, int offHour, String currentTime)
 {
-    if (manualOverride)
-        return;
+    // Enhanced debugging
+SysLogs::logInfo("RELAY", "Schedule Check - On Hour: " + String(onHour) + ", Off Hour: " + String(offHour) + ", Current Time: " + currentTime + ", Relay State: " + String(relayState ? "ON" : "OFF") + ", Manual Override: " + String(manualOverride ? "ACTIVE" : "INACTIVE"));
 
+    if (manualOverride)
+    {
+        SysLogs::logInfo("RELAY", "Manual override is active - skipping schedule control");
+        SysLogs::logInfo("RELAY", "---------------------------");
+        return;
+    }
+
+    // Current time comes in like 14:58:59, extract parameters
     int currentHour = currentTime.substring(0, 2).toInt();
 
-    bool shouldBeOn;
-    if (onHour < offHour)
+    if (currentHour >= onHour && currentHour < offHour)
     {
-        // Simple case: on and off same day (e.g., 8:00 to 16:00)
-        shouldBeOn = (currentHour >= onHour && currentHour < offHour);
+        SysLogs::logInfo("RELAY", "Time is within schedule period (" + String(onHour) + ":00 - " + String(offHour) + ":00)");
+        if (!relayState)
+        {
+            SysLogs::logInfo("RELAY", "Relay is OFF - turning ON for schedule");
+            turnOn();
+        }
+        else
+        {
+            SysLogs::logInfo("RELAY", "Relay is already ON - no action needed");
+        }
     }
     else
     {
-        // Complex case: period spans midnight (e.g., 18:00 to 12:00 next day)
-        shouldBeOn = (currentHour >= onHour || currentHour < offHour);
+        SysLogs::logInfo("RELAY", "Time is outside schedule period (" + String(onHour) + ":00 - " + String(offHour) + ":00)");
+        if (relayState)
+        {
+            SysLogs::logInfo("RELAY", "Relay is ON - turning OFF (outside schedule)");
+            turnOff();
+        }
+        else
+        {
+            SysLogs::logInfo("RELAY", "Relay is already OFF - no action needed");
+        }
     }
-
-    if (shouldBeOn && !relayState)
-    {
-        Serial.println("The time is within the scheduled period: " + String(onHour) + ":00 to " + String(offHour) + ":00");
-        Serial.println("Turning on relay");
-        turnOn();
-    }
-    else if (!shouldBeOn && relayState)
-    {
-        Serial.println("The time is outside the scheduled period: " + String(onHour) + ":00 to " + String(offHour) + ":00");
-        Serial.println("Turning off relay");
-        turnOff();
-    }
+    SysLogs::logInfo("RELAY", "Final Relay State: " + String(relayState ? "ON" : "OFF"));
+    SysLogs::logInfo("RELAY", "---------------------------");
 }
 
-// Set the relay based on the error state
-void RelayControl::setRelayForError(bool state)
+/*******
+ * Auto Feeding System Control
+ * This function controls the nutrient feeding system based on TDS values.
+ * - Feeds for 5 seconds when TDS is below target
+ * - Waits for stabilization period before allowing next feeding cycle
+ **********************************************************************************************/
+void RelayControl::setAutoFeedingSystem(float tdsValue, float targetTDS, unsigned long stabilizationDelay)
 {
-    if (state)
+    if (manualOverride)
     {
+        Serial.println("Manual override active - skipping auto-feeding control");
+        return;
+    }
+
+    unsigned long currentTime = millis();
+
+    // Enhanced debugging
+    Serial.println("--- Auto Feeding System Check ---");
+    Serial.println("Current TDS: " + String(tdsValue) + " PPM");
+    Serial.println("Target TDS: " + String(targetTDS) + " PPM");
+    Serial.println("Currently Feeding: " + String(currentlyFeeding ? "YES" : "NO"));
+    Serial.println("Relay State: " + String(relayState ? "ON" : "OFF"));
+
+    // Handle active feeding cycle
+    if (currentlyFeeding)
+    {
+        unsigned long feedingElapsed = currentTime - feedingStartTime;
+        Serial.println("Feeding in progress - Elapsed: " + String(feedingElapsed) + "ms / " + String(FEEDING_DURATION) + "ms");
+
+        if (feedingElapsed >= FEEDING_DURATION)
+        {
+            // Stop feeding after 5 seconds
+            turnOff();
+            currentlyFeeding = false;
+            lastFeedingTime = currentTime;
+            Serial.println("Feeding cycle completed - waiting for stabilization");
+        }
+        Serial.println("----------------------------------");
+        return;
+    }
+
+    // Check if we're in stabilization period
+    if (lastFeedingTime > 0)
+    {
+        unsigned long timeSinceLastFeeding = currentTime - lastFeedingTime;
+        Serial.println("Time since last feeding: " + String(timeSinceLastFeeding / 1000) + "s / " + String(stabilizationDelay / 1000) + "s");
+
+        if (timeSinceLastFeeding < stabilizationDelay)
+        {
+            Serial.println("Still in stabilization period - no feeding allowed");
+            Serial.println("----------------------------------");
+            return;
+        }
+        else
+        {
+            Serial.println("Stabilization period complete - ready for next feeding if needed");
+        }
+    }
+
+    // Check if feeding is needed
+    float feedingThreshold = targetTDS;
+    Serial.println("Feeding threshold: " + String(feedingThreshold) + " PPM");
+    Serial.println("TDS comparison: " + String(tdsValue) + " < " + String(feedingThreshold) + " = " + String(tdsValue < feedingThreshold ? "TRUE" : "FALSE"));
+
+    if (tdsValue < feedingThreshold)
+    {
+        Serial.println("TDS below target (with hysteresis) - starting feeding cycle");
         turnOn();
+        currentlyFeeding = true;
+        feedingStartTime = currentTime;
+        Serial.println("Feeding started - will run for " + String(FEEDING_DURATION / 1000) + " seconds");
     }
     else
     {
-        turnOff();
+        Serial.println("TDS within acceptable range - no feeding needed");
+        // Ensure relay is off if we're not feeding
+        if (relayState)
+        {
+            turnOff();
+        }
     }
-}
 
-// Toggle the relay
-void RelayControl::toggleRelay()
-{
-    if (relayState)
-    {
-        turnOff();
-    }
-    else
-    {
-        turnOn();
-    }
-}
-
-String RelayControl::getStatus() const {
-    String status = "Pin " + String(relayPin) + ": ";
-    status += relayState ? "ON" : "OFF";
-    if (manualOverride) {
-        status += " (Manual Override)";
-    }
-    return status;
+    Serial.println("----------------------------------");
 }

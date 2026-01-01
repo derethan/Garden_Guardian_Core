@@ -1,442 +1,731 @@
-// CC:DB:A7:32:7:BC
+/**
+ * @file main.cpp
+ * @brief Main firmware for Garden Guardian Temperature & Humidity Monitor
+ *
+ * ESP32-based greenhouse monitoring system that reads DHT sensor data, manages
+ * network connectivity (WiFi/AP modes), publishes data via MQTT/HTTP, and supports
+ * deep sleep power management for battery operation.
+ *
+ * System supports multiple operating modes:
+ * - INITIALIZING: Boot and initial configuration
+ * - NORMAL_OPERATION: Regular sensor reading and data publishing
+ * - CONFIG_MODE: Access point mode for WiFi configuration
+ * - WAKE_UP: Recovery mode after deep sleep
+ * - SERIAL_MODE: Serial configuration interface (future feature)
+ * - ERROR: Error handling state
+ */
 
-/*****************************************
- *  Imported Libraries and files
- *****************************************/
-// Arduino Libraries
+// System Libraries
 #include <Arduino.h>
-#include "definitions.h"
+#include <time.h>
+#include "esp_sleep.h"
 
-// wifi for esp32
-#include <esp_now.h>
-#include <esp_wifi.h>
-#include <WiFi.h>
+// Include System Libraries
+#include "networkConnections.h"
+#include "mqttConnection.h"
+#include "timezones.h"
 
-// Sensitive Data
-#include "secrets.h"
-
-// import Directory Files
+// Device Libraries
+#include "dhtSensor.h"
 #include "relayControl.h"
 
-// Update these constants near the top of the file
-#define TIME_ZONE_OFFSET -3.5  // NST (UTC-3:30)
-bool isDST = false;  // This will be managed dynamically
+// Config
+#include "config.h"
+#include "secrets.h"
 
-/*****************************************\
- *  Initialize Modules and Variables
-\*****************************************/
-RelayControl relay1(RELAY_PIN_HEATER_WATER_1, 5.0);  // Water Temperature
-RelayControl relay2(RELAY_PIN_HEATER_ROOM, 5.0);     // Room Heater
-RelayControl relay3(RELAY_PIN_PUMP_WATER_1);         // Water Pump
-RelayControl relay4(RELAY_PIN_LIGHTS);               // Lights
-RelayControl relays[] = {relay1, relay2, relay3, relay4};
+// Base configuration system
+#include "state.h"
+#include "base/deviceConfig.h"
+#include "base/sysLogs.h"
+#include "base/serialConfig.h"
 
-// Time Variables For Light Relay
-int onHour = 18;   // 4 AM
-int offHour = 12; // 10 PM
-String currentTime;
+// Local device configuration Overrides
+#include "localDeviceConfig.h"
 
-// Temperature Variables for heater Relays
-float currentWaterTemp = 0.0;
-float targetWaterTemp = 20.0;
+// Runtime DEBUG_MODE variable (replaces compile-time constant)
+bool DEBUG_MODE = true;
 
-float currentHeaterTemp = 0.0;
-float targetHeaterTemp = 24.0;
+/**
+ * @brief Global system state object
+ */
+SystemState state;
 
-// Pump Variables (Minutes)
-int onInterval = 10;
-int offInterval = 15;
+/**
+ * @brief Sensor data manager for greenhouse category
+ */
+SensorDataManager sensorDataManager("greenhouse");
 
-// Timer variables
-unsigned long previousMillis = 0;
-const long interval = 15000; // 1 minute
+/**
+ * @brief Network management object
+ */
+NetworkConnections network;
 
-// Must match the sender structure
-typedef struct epsNowMessage
+/**
+ * @brief MQTT connection object
+ */
+MqttConnection mqtt;
+
+/**
+ * @brief DHT temperature and humidity sensor object
+ */
+DHTSensor dhtSensor(DHTPIN, DHTTYPE);
+
+/**
+ * @brief Relay control objects
+ */
+RelayControl relay1(RELAY1_PIN);
+RelayControl relay2(RELAY2_PIN, 3.0);
+
+RelayControl relay3(RELAY3_PIN, 5.0);
+RelayControl relay4(RELAY4_PIN, 5.0);
+
+/**
+ * @brief Latest sensor readings for web display
+ */
+LatestReadings latestReadings;
+
+// Forward Declarations
+void loadDeviceSettings();
+void setupNetwork();
+void initializeMQTT();
+
+bool readSensorData(bool discardReading = false);
+bool readDHTData(bool discardReading = false);
+
+bool publishDataWithMQTT();
+bool publishDataWithHTTP();
+
+/**
+ * @brief Load and apply device-specific settings from storage
+ *
+ * Uses the base configuration system with a device-specific applier
+ * to load and apply local device settings
+ */
+void loadDeviceSettings()
 {
-  String timestamp;
-  String type;
-  int onHour;
-  int offHour;
-  float currentTemp;
-  float targetTemp;
-  int onInterval;
-  int offInterval;
-  bool manualOverride;
-  bool relayState;
+  // Create device-specific settings applier
+  LocalDeviceSettingsApplier applier(state);
 
-} epsNowMessage;
-
-// Create a struct_message called myData
-epsNowMessage recievedMessage;
-void setDeviceTime(uint32_t unixTime)
-{
-  struct timeval tv;
-  tv.tv_sec = unixTime; // Unix timestamp (seconds since Jan 1, 1970)
-  tv.tv_usec = 0;
-  settimeofday(&tv, nullptr);
+  // Use the base configuration system to load and apply settings
+  BaseConfig::loadAndApplyDeviceSettings(network, &applier);
 }
-void parseData(epsNowMessage message)
+
+/**
+ * @brief Setup network connections (WiFi/AP mode)
+ *
+ * Initializes WiFi connection with stored credentials, performs NTP time
+ * synchronization, and falls back to RTC if NTP fails. Configures access
+ * point mode if WiFi connection fails.
+ */
+void setupNetwork()
 {
-  // Debugging: Print the received message details
-  Serial.println("Received Message:");
-  Serial.print("Timestamp: ");
-  Serial.println(message.timestamp);
-  Serial.print("Type: ");
-  Serial.println(message.type);
-  Serial.print("On Hour: ");
-  Serial.println(message.onHour);
-  Serial.print("Off Hour: ");
-  Serial.println(message.offHour);
-  Serial.print("Current Temp: ");
-  Serial.println(message.currentTemp);
-  Serial.print("Target Temp: ");
-  Serial.println(message.targetTemp);
-  Serial.print("On Interval: ");
-  Serial.println(message.onInterval);
-  Serial.print("Off Interval: ");
-  Serial.println(message.offInterval);
-  Serial.print("Manual Override: ");
-  Serial.println(message.manualOverride);
-  Serial.print("Relay State: ");
-  Serial.println(message.relayState);
+  WiFiCredentials credentials = network.loadWiFiCredentials();
+  network.setupWiFi(credentials, state.idCode, state.apAlwaysOn);
 
-  // Check the type of message
-  if (message.type == "relay1")
+  if (network.isConnected())
   {
-    // Check if the manual override is set
-    if (message.manualOverride)
+    // Attempt NTP synchronization
+    unsigned long ntpTime = network.getTime();
+    if (ntpTime == 0)
     {
-      relay1.setManualOverride(true);
-      if (message.relayState)
+      SysLogs::logWarning("NTP synchronization failed. Continuing with RTC time if available.");
+      // Try to get RTC time as fallback
+      unsigned long rtcTime = network.getRTCTime();
+      if (rtcTime == 0)
       {
-        relay1.turnOn();
+        SysLogs::logWarning("No valid time source available (neither NTP nor RTC)");
+        SysLogs::logWarning("Timestamps in sensor data may be inaccurate");
       }
       else
       {
-        relay1.turnOff();
+        SysLogs::logInfo("NETWORK", "Using RTC time as fallback");
       }
     }
     else
     {
-      relay1.setManualOverride(false);
+      SysLogs::logSuccess("NETWORK", "System time synchronized successfully via NTP");
     }
 
-    // Print Message
-    Serial.println("Relay 1 Data Processed");
-    currentHeaterTemp = message.currentTemp;
-    targetHeaterTemp = message.targetTemp;
+    // Start the web server when connected to WiFi
+    // network.startWebServer();
   }
-  else if (message.type == "relay2")
-  {
-    // Check if the manual override is set
-    if (message.manualOverride)
-    {
-      relay2.setManualOverride(true);
-      if (message.relayState)
-      {
-        relay2.turnOn();
-      }
-      else
-      {
-        relay2.turnOff();
-      }
-    }
-    else
-    {
-      relay2.setManualOverride(false);
-    }
+}
 
-    // Print Message
-    Serial.println("Relay 2 Data Processed");
-    currentWaterTemp = message.currentTemp;
-    targetWaterTemp = message.targetTemp;
+/**
+ * @brief Initialize MQTT connection to AWS IoT Core
+ *
+ * Configures and connects to AWS IoT Core if WiFi is connected and not in AP mode.
+ * Combines device ID with ID code for full device identifier.
+ */
+void initializeMQTT()
+{
+  if (!network.isAPMode() && WiFi.status() == WL_CONNECTED)
+  {
+    // Combine device_id with idCode for the full device identifier
+    String fullDeviceID = state.deviceID + state.idCode;
+    mqtt.initializeMQTT(fullDeviceID.c_str());
+    mqtt.connectMQTT();
   }
-  else if (message.type == "relay3")
-  {
-    // Check if the manual override is set
-    if (message.manualOverride)
-    {
-      relay3.setManualOverride(true);
-      if (message.relayState)
-      {
-        relay3.turnOn();
-      }
-      else
-      {
-        relay3.turnOff();
-      }
-    }
-    else
-    {
-      relay3.setManualOverride(false);
-    }
+}
 
-    // Print Message
-    Serial.println("Relay 3 Data Processed");
-    onInterval = message.onInterval;
-    offInterval = message.offInterval;
+/**
+ * @brief Read sensor data from all connected sensors
+ * @param discardReading If true, updates latest readings but doesn't store for publishing
+ * @return true if all sensor reads successful, false if any failed
+ *
+ * Acts as a wrapper for specific sensor reading functions. Currently only reads DHT data
+ * but designed to support multiple sensor types in the future.
+ */
+bool readSensorData(bool discardReading)
+{
+
+  SysLogs::println();
+  SysLogs::printSectionHeader("Data Collection Starting");
+  SysLogs::logInfo("SENSOR", "Reading sensor data at t=" + String(millis()));
+
+  if (!readDHTData(discardReading))
+  {
+    SysLogs::logError("Failed to read DHT data");
+    state.sensorError = true;
+    return false;
   }
-  else if (message.type == "relay4")
+
+  sensorDataManager.printAllSensorData();
+
+  SysLogs::printSectionHeader("Data Collection Complete");
+  SysLogs::println();
+
+  state.sensorError = false;
+  return true;
+}
+
+/**
+ * @brief Read temperature and humidity data from DHT sensor
+ * @param discardReading If true, updates latest readings but doesn't store for publishing
+ * @return true if readings are valid, false if sensor read failed
+ *
+ * Reads temperature and humidity from DHT sensor, updates latest readings for web display,
+ * and optionally stores data for publishing. Handles sensor errors and invalid readings.
+ */
+bool readDHTData(bool discardReading)
+{
+
+  // Read temperature and humidity
+  float temp = dhtSensor.readTemperature();
+  float hum = dhtSensor.readHumidity();
+  int status = 200; // Default status
+
+  // Check if readings are valid
+  if (isnan(temp) || isnan(hum))
   {
-    // Check if the manual override is set
-    if (message.manualOverride)
-    {
-      relay4.setManualOverride(true);
-      if (message.relayState)
-      {
-        relay4.turnOn();
-      }
-      else
-      {
-        relay4.turnOff();
-      }
-    }
-    else
-    {
-      relay4.setManualOverride(false);
-    }
+    SysLogs::logError("Failed to read from DHT sensor!");
+    state.sensorError = true;
+    state.lastErrorTime = millis();
+    status = 500; // Update status to indicate error
 
-    // Print Message
-    Serial.println("Relay 4 Data Processed");
-    // currentTime = message.timestamp;
-    onHour = message.onHour;
-    offHour = message.offHour;
-
-    // Get the Unix TimeStamp
-    currentTime = message.timestamp;
-
-    // Set the time variables
+    // Update latest readings with error status
+    latestReadings.temperatureStatus = 500;
+    latestReadings.humidityStatus = 500;
   }
   else
   {
-    Serial.println("Invalid Message Type");
+    // Update local State
+    state.Current_Air_Temp = temp;
+
+    // Always update latest readings for web display (even if discarding for publishing)
+    latestReadings.temperature = temp;
+    latestReadings.humidity = hum;
+    latestReadings.temperatureTimestamp = state.currentTime;
+    latestReadings.humidityTimestamp = state.currentTime;
+    latestReadings.temperatureStatus = status;
+    latestReadings.humidityStatus = status;
+    latestReadings.hasValidData = true;
   }
+
+  // Only update the stored values for publishing if we're not discarding the reading
+  if (!discardReading)
+  {
+
+    sensorDataManager.addSensorData({.sensorID = "DHT-" + state.idCode,
+                                     .sensorType = {"airTemperature"},
+                                     .sensorName = "DHT",
+                                     .status = status,
+                                     .unit = {"°C"},
+                                     .timestamp = state.currentTime,
+                                     .values = {temp}});
+
+    sensorDataManager.addSensorData({.sensorID = "DHT-" + state.idCode,
+                                     .sensorType = {"airHumidity"},
+                                     .sensorName = "DHT",
+                                     .status = status,
+                                     .unit = {"%"},
+                                     .timestamp = state.currentTime,
+                                     .values = {hum}});
+  }
+  else
+  {
+    SysLogs::logInfo("SENSOR", "Reading discarded for publishing (device in stabilization period)");
+    SysLogs::logInfo("SENSOR", "But latest readings updated for web display");
+  }
+
+  return !isnan(temp) && !isnan(hum);
 }
 
-// Insert your SSID
-constexpr char WIFI_SSID[] = "BATECH_Camera";
-
-int32_t getWiFiChannel(const char *ssid)
+/**
+ * @brief Publish sensor data via MQTT to AWS IoT Core
+ * @return true if all data published successfully, false if any publish failed
+ *
+ * Iterates through all collected sensor data and publishes each item to AWS IoT Core
+ * via MQTT. Converts data to JSON format before transmission. Includes delays between
+ * publishes to prevent overwhelming the broker.
+ */
+bool publishDataWithMQTT()
 {
-  if (int32_t n = WiFi.scanNetworks())
+  SysLogs::logInfo("MQTT", "Publishing sensor data via MQTT...");
+  SysLogs::logInfo("MQTT", String(sensorDataManager.getSensorDataCount()) + " sensor data items...");
+
+  // Combine device_id with idCode for the full device identifier
+  String fullDeviceID = state.deviceID + state.idCode;
+
+  const std::vector<sensorData> &dataList = sensorDataManager.getAllSensorData();
+  bool allPublished = true;
+
+  for (const auto &data : dataList)
   {
-    for (uint8_t i = 0; i < n; i++)
+
+    // Print the sensor being published
+    SysLogs::logDebug("MQTT", "Publishing sensor data for: " + data.sensorID);
+
+    // Convert sensor data to JSON format
+    String jsonPayload = sensorDataManager.convertSensorDataToJSON(data, fullDeviceID);
+
+    // Publish to MQTT
+    if (mqtt.isConnected())
     {
-      if (!strcmp(ssid, WiFi.SSID(i).c_str()))
+      // Publish the JSON data to the MQTT Broker
+      if (!mqtt.publishMessage(jsonPayload))
       {
-        return WiFi.channel(i);
+        SysLogs::logError("Failed to publish to MQTT: " + data.sensorID);
+        allPublished = false;
       }
     }
+    else
+    {
+      SysLogs::logWarning("MQTT not connected, skipping publish for: " + data.sensorID);
+      allPublished = false;
+    }
+
+    // Delay for 1 second between each publish
+    delay(1000);
   }
-  return 0;
+  return allPublished;
 }
 
-// callback function that will be executed when data is received
-void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
+/**
+ * @brief Publish sensor data via HTTP POST request
+ * @return true if data published successfully, false otherwise
+ *
+ * Publishes all collected sensor data via HTTP to a remote server.
+ * Clears the sensor data buffer on successful transmission.
+ */
+bool publishDataWithHTTP()
 {
-  memcpy(&recievedMessage, incomingData, sizeof(recievedMessage));
-  parseData(recievedMessage);
-}
+  SysLogs::printSectionHeader("HTTP");
+  SysLogs::logInfo("HTTP", "Publishing " + String(sensorDataManager.getSensorDataCount()) + " sensor data items...");
 
-// Add these functions after the includes and before the setup():
-bool isNewfoundlandDST() {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        return false;
-    }
+  // Combine device_id with idCode for the full device identifier
+  String fullDeviceID = state.deviceID + state.idCode;
 
-    // DST starts second Sunday in March at 2:00 AM
-    // DST ends first Sunday in November at 2:00 AM
+  // Publish sensor data via HTTP
+  bool publishSuccess = network.publishSensorData(sensorDataManager, fullDeviceID);
 
-    int month = timeinfo.tm_mon + 1; // tm_mon is 0-based
-    int day = timeinfo.tm_mday;
-    int wday = timeinfo.tm_wday; // 0 = Sunday
-    int hour = timeinfo.tm_hour;
-
-    // January, February, December are never DST
-    if (month < 3 || month > 11) {
-        return false;
-    }
-    
-    // April to October are always DST
-    if (month > 3 && month < 11) {
-        return true;
-    }
-
-    int weekOfMonth = (day - 1) / 7 + 1;
-
-    // March - DST starts on second Sunday at 2:00 AM
-    if (month == 3) {
-        // Before second Sunday
-        if (weekOfMonth < 2) return false;
-        // After second Sunday
-        if (weekOfMonth > 2) return true;
-        // On second Sunday
-        return (wday == 0 && hour >= 2) || wday > 0;
-    }
-    
-    // November - DST ends on first Sunday at 2:00 AM
-    if (month == 11) {
-        // After first Sunday
-        if (weekOfMonth > 1) return false;
-        // Before first Sunday
-        if (wday < 0) return true;
-        // On first Sunday
-        return hour < 2;
-    }
-
-    return false;
-}
-
-void updateTimeConfig() {
-    bool newDST = isNewfoundlandDST();
-    if (newDST != isDST) {
-        isDST = newDST;
-        configTime((TIME_ZONE_OFFSET * 3600), (isDST ? 3600 : 0), "pool.ntp.org");
-        Serial.print("DST status changed to: ");
-        Serial.println(isDST ? "ON" : "OFF");
-    }
-}
-
-// Replace the connectToWiFi() function with this updated version
-void connectToWiFi() {
-  Serial.println("Connecting to WiFi...");
-  WiFi.begin(SECRET_SSID, SECRET_PASS);  // WIFI_PASSWORD should be defined in secrets.h
-  delay(1000);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
+  if (publishSuccess)
+  {
+    SysLogs::logSuccess("HTTP", "Data published successfully - clearing sensor data buffer");
   }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    
-    // Initial time configuration
-    isDST = isNewfoundlandDST();
-    configTime((TIME_ZONE_OFFSET * 3600), (isDST ? 3600 : 0), "pool.ntp.org");
-    Serial.print("Initial DST status: ");
-    Serial.println(isDST ? "ON" : "OFF");
-  } else {
-    Serial.println("\nFailed to connect to WiFi");
+  else
+  {
+    SysLogs::logError("Failed to publish data - keeping data for next attempt");
   }
+
+  return publishSuccess;
 }
 
-// Update the getCurrentFormattedTime() function
-String getCurrentFormattedTime() {
-  struct tm timeinfo;
-  if(!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time");
-    return "00";
+/**
+ * @brief Enter deep sleep mode with proper WiFi cleanup
+ * @param currentMillis Current system time in milliseconds
+ *
+ * Calculates optimal sleep duration based on next scheduled sensor reading or publish event.
+ * Properly disconnects WiFi and MQTT before entering ESP32 light sleep mode. Wakes up
+ * via timer interrupt.
+ */
+void sleep(unsigned long currentMillis)
+{
+  // Calculate which interval is next (reading or publishing)
+  unsigned long timeToNextReading = state.sensorRead_interval - (currentMillis - state.lastReadingTime);
+  unsigned long timeToNextPublish = state.httpPublishInterval - (currentMillis - state.lastHTTPPublishTime);
+  unsigned long sleepDuration = min(timeToNextReading, timeToNextPublish); // Sleep until the next scheduled event
+
+  // Ensure minimum wake duration is respected
+  // if (sleepDuration < state.MIN_WAKE_DURATION)
+  // {
+  //   sleepDuration = state.MIN_WAKE_DURATION;
+  // }
+
+  SysLogs::logInfo("SYSTEM", "Entering sleep for " + String(sleepDuration) + " ms");
+
+  // Properly disconnect WiFi and MQTT before sleep
+  if (network.isConnected())
+  {
+    SysLogs::logInfo("SYSTEM", "Disconnecting MQTT and WiFi before sleep...");
+    mqtt.disconnect();
+    delay(100);
+    network.disconnectWiFi();
+    delay(200);
   }
-  
-  // // Add debug print
-  // Serial.print("Raw hour from system: ");
-  // Serial.println(timeinfo.tm_hour);
-  
-  char timeString[3];
-  strftime(timeString, 3, "%H", &timeinfo);
-  return String(timeString);
+
+  // Brief delay for serial to complete and to prevent busy-waiting
+  delay(100);
+
+  // Enter light sleep
+  esp_sleep_enable_timer_wakeup(sleepDuration * 1000); // Convert ms to us
+  esp_light_sleep_start();
+  state.currentMode = SystemMode::WAKE_UP;
+  SysLogs::logInfo("SYSTEM", "Woke up from sleep");
 }
 
-void displayRelayStatuses() {
-    Serial.println("\n=== Relay Statuses ===");
-    Serial.println("Relay 1 (Water Heater): " + relay1.getStatus() + 
-                  " [Current: " + String(currentWaterTemp) + "°C, Target: " + String(targetWaterTemp) + "°C]");
-    Serial.println("Relay 2 (Room Heater): " + relay2.getStatus() + 
-                  " [Current: " + String(currentHeaterTemp) + "°C, Target: " + String(targetHeaterTemp) + "°C]");
-    Serial.println("Relay 3 (Water Pump): " + relay3.getStatus() + 
-                  " [On: " + String(onInterval) + "min, Off: " + String(offInterval) + "min]");
-    Serial.println("Relay 4 (Lights): " + relay4.getStatus() + 
-                  " [On: " + String(onHour) + ":00, Off: " + String(offHour) + ":00]");
-    Serial.println("Current Time: " + currentTime + ":00");
-    Serial.println("==================\n");
-}
-
+/**
+ * @brief Main system setup function
+ *
+ * Initializes serial communication, sensors, network connections, and MQTT.
+ * Called once at system boot. Loads device settings from storage and configures
+ * all system components before entering the main loop.
+ */
 void setup()
 {
   Serial.begin(115200);
+  delay(5000); // Allow time for serial to initialize
+  SysLogs::logInfo("SYSTEM", BANNER_TEXT);
 
-  // Delay 5 sec for startup messages
-  delay(5000);
+  // Record start time for stabilization tracking
+  state.deviceStartTime = millis();
+  SysLogs::logInfo("SYSTEM", "Device start time: t=" + String(state.deviceStartTime));
 
-  // Startup message
-  Serial.println("ESP32 Board Initialized");
+  SysLogs::logInfo("SENSOR", "Initializing sensors...");
 
-  // Initialize The Relays
-  for (RelayControl &relay : relays)
+  // Initialize DHT sensor
+  if (!dhtSensor.begin())
   {
-    relay.initialize();
+    state.sensorError = true;
+    state.lastErrorTime = millis();
+    SysLogs::logError("Failed to connect to DHT sensor!");
+  }
+  else
+  {
+    SysLogs::logInfo("SENSOR", "DHT sensor initialized successfully.");
   }
 
-  // Connect to WiFi first
-  connectToWiFi();
+  // Initialize Relays
+  relay1.initialize();
+  relay2.initialize();
+  relay3.initialize();
+  relay4.initialize();
 
-  // Set device as a Wi-Fi Station
-  WiFi.mode(WIFI_STA);
+  delay(1000);
 
-  int32_t channel = getWiFiChannel(WIFI_SSID);
+  // Load and apply device settings BEFORE network initialization
+  loadDeviceSettings();
 
-  // WiFi.printDiag(Serial); // Uncomment to verify channel number before
-  esp_wifi_set_promiscuous(true);
-  esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_promiscuous(false);
-  // WiFi.printDiag(Serial); // Uncomment to verify channel change after
+  // Initialize Network
+  SysLogs::logInfo("SYSTEM", "Initializing network connections...");
+  setupNetwork();
 
-  // Init ESP-NOW
-  if (esp_now_init() != ESP_OK)
-  {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
+  // Initialize MQTT if connected to network
+  SysLogs::logInfo("SYSTEM", "Initializing MQTT connection...");
+  initializeMQTT();
 
-  // Once ESPNow is successfully Init, we will register for recv CB to
-  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+  SysLogs::logInfo("SYSTEM", "Setup complete.");
 
-  // Remove or comment out this line since we're now configuring time in connectToWiFi()
-  // configTime(0, 0, "pool.ntp.org");
- 
+  // Notify about menu access
+  SysLogs::logInfo("SYSTEM", "To access Serial Configuration Menu, connect via Serial and enter password within 10 seconds of startup.");
 }
 
-/*****************************************\
- *   MAIN PROGRAM LOOP
-\*****************************************/
+/**
+ * @brief Main system loop function
+ *
+ * Implements a state machine that handles different operating modes:
+ * - INITIALIZING: Determines initial operating mode (normal or config)
+ * - NORMAL_OPERATION: Regular sensor reading, data publishing, and sleep cycles
+ * - CONFIG_MODE: Access point mode for WiFi configuration
+ * - WAKE_UP: Recovery and reconnection after sleep
+ * - SERIAL_MODE: Serial configuration interface
+ * - ERROR: Error handling state
+ *
+ * Runs continuously after setup() completes.
+ */
 void loop()
 {
-  static unsigned long lastDSTCheck = 0;
   unsigned long currentMillis = millis();
-  
-  // Check DST status every hour
-  if (currentMillis - lastDSTCheck >= 3600000) {
-      updateTimeConfig();
-      lastDSTCheck = currentMillis;
-  }
 
-  // Get current time at the start of each loop
-  currentTime = getCurrentFormattedTime();
-
-  // Relay Check
-  if (currentMillis - previousMillis >= interval || previousMillis == 0)
+  // Check for serial access password in any mode except SERIAL_MODE
+  // Note: checkForSerialAccess() is non-blocking and only processes available serial data
+  if (state.currentMode != SystemMode::SERIAL_MODE && SerialCLI::checkForSerialAccess())
   {
-    // Message
-    Serial.println("Checking Relays");
-
-    relay1.setRelayforTemp(currentWaterTemp, targetWaterTemp);    // Water Temperature
-    relay2.setRelayforTemp(currentHeaterTemp, targetHeaterTemp);  // Room Temperature
-    relay3.setRelayForTimedIntervals(onInterval, offInterval);    // Water Pump
-    relay4.setRelayForSchedule(onHour, offHour, currentTime);     // Lights
-
-    // Display relay statuses
-    displayRelayStatuses();
-
-    previousMillis = currentMillis;
+    state.previousMode = state.currentMode;
+    state.currentMode = SystemMode::SERIAL_MODE;
   }
 
-  // Add a delay to avoid rapid toggling
-  delay(5000);
+  switch (state.currentMode)
+  {
+  case SystemMode::INITIALIZING:
+  {
+    if (network.isConnected())
+    {
+      state.currentMode = SystemMode::NORMAL_OPERATION;
+
+      // Initialize system state: Time
+      state.currentTime = network.getRTCTime();
+      state.lastTimeSyncEpoch = state.currentTime;
+
+      // Start web server when connected to WiFi
+      if (!state.sleepEnabled)
+      {
+        network.startWebServer();
+      }
+    }
+    else if (network.isAPMode())
+    {
+      state.currentMode = SystemMode::CONFIG_MODE;
+      SysLogs::logInfo("SYSTEM", "Entering Configuration Mode, Awaiting Network Configuration...");
+      state.currentTime = millis();
+    }
+    break;
+  }
+
+  case SystemMode::NORMAL_OPERATION:
+  {
+    // Update current time
+    if (network.isConnected())
+    {
+      state.currentTime = network.getRTCTime();
+      mqtt.checkConnection();
+    }
+    else
+    {
+      state.currentTime = millis();
+    }
+
+    // Check device stabilization status
+    // if (!state.deviceStabilized && currentMillis - state.deviceStartTime >= state.SENSOR_STABILIZATION_TIME)
+    // {
+    //   state.deviceStabilized = true;
+    //   SysLogs::logInfo("SYSTEM", "DHT Sensor stabilized at t=" + String(currentMillis) + ", DHT Sensor readings will begin.");
+    // }
+
+    /*================== SENSOR READING ============================*/
+
+    // Check if it's time to read Data from connected Sensors
+    if ((currentMillis - state.lastReadingTime >= state.sensorRead_interval) || state.lastReadingTime == 0)
+    {
+      state.lastReadingTime = currentMillis;
+
+      // Read sensor, but discard data if not yet stabilized
+      // bool discardReading = !state.deviceStabilized;
+      // if (discardReading)
+      // {
+      //   SysLogs::logInfo("SYSTEM", "Device not stabilized yet, reading will be discarded");
+      // }
+
+      bool readSuccess = readSensorData(false); // use DiscardReading as param for stabilization
+      state.lastSensorRead = state.currentTime;
+
+      if (!readSuccess)
+      {
+        SysLogs::logError("Sensor read failed during normal operation at t=" + String(currentMillis));
+      }
+    }
+
+    /*================== CONTROLS ============================*/
+
+    // Set Relays based on schedule or conditions
+    if ((currentMillis - state.lastRelayRead >= state.relayReadInterval) || state.lastRelayRead == 0)
+    {
+      // Message
+      Serial.println("Checking Relays");
+      // Use local timezone (Newfoundland) when scheduling relays
+      const char *tz = getTimezoneString("Canada Newfoundland Time");
+
+      relay1.setRelayForSchedule(state.relayScheduleOnHour, state.RelayScheduleOffHour, network.getCurrentTimeString(tz));
+      relay2.setRelayforTemp(state.Current_Air_Temp, state.Target_Air_Temp); // Current/Target
+      relay3.setRelayforTemp(state.DWC_Res_Temp, state.Target_DWC_Res_Temp); // Current/Target
+      relay4.setRelayforTemp(state.NFT_Res_Temp, state.Target_NFT_Res_Temp); // Current/Target
+
+      state.lastRelayRead = currentMillis;
+    }
+
+    /*================== PUBLISHING ============================*/
+
+    // Check if it's time to publish data via HTTP (non-blocking timer)
+    if (state.httpPublishEnabled && network.isConnected() &&
+        (currentMillis - state.lastHTTPPublishTime >= state.httpPublishInterval))
+    {
+      SysLogs::logInfo("SYSTEM", "Time to publish sensor data at t=" + String(currentMillis));
+      state.lastHTTPPublishTime = currentMillis;
+
+      // Only publish if we have data and device is stabilized
+      // if (state.deviceStabilized && sensorData.getSensorDataCount() > 0)
+      if (sensorDataManager.getSensorDataCount() > 0)
+      {
+
+        // First handle HTTP Publishing
+        // publishDataWithHTTP();
+
+        // handle Publishing via MQTT as well
+        publishDataWithMQTT();
+
+        // Clear sensor data after publishing
+        sensorDataManager.resetSensorData();
+      }
+      else
+      {
+        SysLogs::logInfo("HTTP", "No data to publish or device not stabilized yet");
+      }
+    }
+
+    /*================== Other  ============================*/
+    // Handle web server requests when connected to WiFi
+    if (network.isConnected() && !state.sleepEnabled)
+    {
+      network.handleClientRequestsWithSensorData(latestReadings);
+    }
+
+    // Sleep Mode - only if not connected via USB Serial
+    if (!Serial && state.sleepEnabled)
+    {
+      sleep(currentMillis);
+    }
+
+    break;
+  }
+
+  case SystemMode::ERROR:
+  {
+    break; // System Mode: Error handling (future implementation)
+  }
+
+  case SystemMode::CONFIG_MODE:
+  {
+    // Check device stabilization status
+    // if (!state.deviceStabilized && currentMillis - state.deviceStartTime >= state.SENSOR_STABILIZATION_TIME)
+    // {
+    //   state.deviceStabilized = true;
+    //   SysLogs::logInfo("SYSTEM", "DHT Sensor stabilized at t=" + String(currentMillis) + ", DHT Sensor readings will begin.");
+    // }
+
+    // Check if it's time to read Data from connected Sensors (even in config mode)
+    if (currentMillis - state.lastReadingTime >= state.sensorRead_interval)
+    {
+      SysLogs::logInfo("SYSTEM", "Time to take a sensor reading at t=" + String(currentMillis));
+      state.lastReadingTime = currentMillis;
+
+      // Read sensor, but discard data if not yet stabilized
+      // bool discardReading = !state.deviceStabilized;
+      // if (discardReading)
+      // {
+      //   SysLogs::logInfo("SYSTEM", "Device not stabilized yet, reading will be discarded");
+      // }
+
+      bool readSuccess = readSensorData(false);
+      state.lastSensorRead = state.currentTime;
+    }
+
+    // Process DNS first
+    if (!state.sleepEnabled)
+    {
+      // network.processDNSRequests();
+      network.handleClientRequestsWithSensorData(latestReadings);
+    }
+
+    break;
+  }
+
+  case SystemMode::WAKE_UP:
+  {
+
+    // We need to reconnect network after wake-up
+    SysLogs::logInfo("SYSTEM", "Re-initializing network connections after wake-up...");
+
+    // Try reconnection with retry logic first
+    bool reconnected = network.reconnectToNetwork(3);
+
+    if (!reconnected)
+    {
+      SysLogs::logInfo("SYSTEM", "Reconnection failed, trying full WiFi setup...");
+      WiFiCredentials credentials = network.loadWiFiCredentials();
+      network.setupWiFi(credentials, state.idCode, state.apAlwaysOn);
+    }
+
+    // Reconnect MQTT if WiFi is connected
+    if (network.isConnected())
+    {
+      SysLogs::logInfo("SYSTEM", "Reconnecting MQTT...");
+      mqtt.checkConnection();
+      state.currentMode = SystemMode::NORMAL_OPERATION;
+
+      // Update time after reconnection
+      state.currentTime = network.getRTCTime();
+      SysLogs::logInfo("SYSTEM", "WiFi reconnected successfully, resuming normal operation");
+    }
+    else
+    {
+      SysLogs::logInfo("SYSTEM", "WiFi reconnection failed, entering configuration mode");
+      state.currentMode = SystemMode::CONFIG_MODE;
+    }
+
+    break;
+  }
+
+  case SystemMode::SERIAL_MODE:
+  {
+    SysLogs::logInfo("SYSTEM", "Entering Serial Configuration Mode");
+
+    // Serial configuration mode for user interaction
+    // This mode disables debug logging and presents an interactive menu
+    // for device configuration, diagnostics, and system management
+    SerialCLI::enterSerialMode(state, network, dhtSensor, latestReadings);
+    // Mode will be restored to previous state by enterSerialMode()
+    break;
+  }
+  }
+
+  // Add a debug statement every 30 seconds to show the system is still running
+  static unsigned long lastHeartbeat = 0;
+  if (currentMillis - lastHeartbeat > 30000)
+  {
+    SysLogs::logInfo("SYSTEM", "Heartbeat at t=" + String(currentMillis) + ", stabilized=" + String(state.deviceStabilized ? "true" : "false"));
+    lastHeartbeat = currentMillis;
+
+    // Print Current time from RTC
+    SysLogs::logInfo("SYSTEM", "Current time from RTC: Unix Epoch: " + String(state.currentTime));
+
+    // Print Local Time
+    time_t rawtime = static_cast<time_t>(state.currentTime);
+    struct tm *timeinfo = localtime(&rawtime);
+    SysLogs::logInfo("SYSTEM", "Local time: " + String(asctime(timeinfo)));
+
+    // Network Status
+    SysLogs::logInfo("NETWORK", "Connected: " + String(network.isConnected() ? "Yes" : "No"));
+    SysLogs::logInfo("NETWORK", "AP Mode: " + String(network.isAPMode() ? "Yes" : "No"));
+
+    SysLogs::logDebug("DEBUG", "Time since last HTTP publish: " + String(currentMillis - state.lastHTTPPublishTime) + " ms, Interval: " + String(state.httpPublishInterval) + " ms");
+
+    // add time remaining and is time to publish boolean
+    unsigned long timeSinceLastPublish = currentMillis - state.lastHTTPPublishTime;
+    unsigned long timeRemaining = (timeSinceLastPublish >= state.httpPublishInterval) ? 0 : (state.httpPublishInterval - timeSinceLastPublish);
+    SysLogs::logDebug("DEBUG", "Time remaining until next HTTP publish: " + String(timeRemaining) + " ms");
+    SysLogs::logDebug("DEBUG", "Is it time to publish? " + String((timeSinceLastPublish >= state.httpPublishInterval) ? "Yes" : "No"));
+  }
+
+  // Short delay to prevent busy-waiting
+  delay(100);
 }

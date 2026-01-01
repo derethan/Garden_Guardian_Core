@@ -2,6 +2,8 @@
 #define GETTIME_H
 
 #include <Arduino.h>
+#include <WiFi.h>
+#include <time.h>
 
 class TimeRetriever {
 public:
