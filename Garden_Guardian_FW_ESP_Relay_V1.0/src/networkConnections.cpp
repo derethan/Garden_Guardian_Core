@@ -1,26 +1,34 @@
-/**
- * @file networkConnections.cpp
- * @brief Network connection management for WiFi, NTP, HTTP, and device configuration
- *
- * Handles all network-related functionality including:
- * - WiFi station and access point modes
- * - NTP time synchronization with RTC fallback
- * - HTTP client for data publishing
- * - Device settings storage and retrieval from NVS
- * - Network reconnection logic
- */
-
 #include "NetworkConnections.h"
+#include <WiFi.h>        // Required for WiFi functionality
 #include <Preferences.h> // Required for NVS
 #include <esp_task_wdt.h>
-#include <HTTPClient.h>
+#include <HTTPClient.h> // Requires WiFi.h to be included first
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include "dataProvider.h" // Include for sensor data access
 #include "server.h"       // Include for server configuration
+#include "state.h"        // Include for system state access
 #include "base/sysLogs.h" // Include for logging functions
+#include <ESPmDNS.h>      // Include for mDNS functionality
 
+//------------------------------------------------------------------------------
+// Module Flags - Enable/Disable sensor display cards
+//
+// Set any of these flags to 'true' to enable the corresponding sensor card
+// on the web dashboard, or 'false' to disable it. This allows you to
+// customize which sensors are displayed based on your hardware configuration.
+//
+// Available modules:
+// - TEMP_DISPLAY: Air/ambient temperature sensor card
+// - HUMIDITY_DISPLAY: Humidity sensor card
+// - TDS_DISPLAY: Total Dissolved Solids (water quality) sensor card
+// - WATER_TEMP_DISPLAY: Water temperature sensor card
+//------------------------------------------------------------------------------
+// Display flags are now defined in config.h to avoid redefinition warnings
+
+//------------------------------------------------------------------------------
 // Global Variables
+//------------------------------------------------------------------------------
 int wifiStatus = WL_IDLE_STATUS; // WiFi radio status
 int status = WL_IDLE_STATUS;     // WiFi connection status
 bool apMode = false;             // Tracks if the device is in AP mode
@@ -33,21 +41,15 @@ static WiFiUDP ntpUDP; // Used for NTP requests
 
 Preferences preferences;
 
-/**
- * @brief Setup WiFi connection in station mode, AP mode, or dual mode
- * @param credentials WiFi credentials structure containing SSID and password
- * @param idCode Unique device identifier code for AP name
- * @param apOn If true, run in dual mode (AP + Station), otherwise station only
- *
- * Configures WiFi mode based on parameters. In dual mode, both AP and station
- * are active. In station-only mode, falls back to AP if connection fails.
- */
+//------------------------------------------------------------------------------
+// Initialization Functions
+//------------------------------------------------------------------------------
 void NetworkConnections::setupWiFi(WiFiCredentials credentials, String idCode, bool apOn)
 {
     // If ApOn is true, then the AP mode is always on, use Wifi Mode for both Station and Ap
     if (apOn)
     {
-        SysLogs::logInfo("NETWORK", "Configuring dual mode (AP + Station)");
+        Serial.println("Configuring dual mode (AP + Station)");
         WiFi.mode(WIFI_AP_STA);
 
         // Setup AP first
@@ -63,13 +65,13 @@ void NetworkConnections::setupWiFi(WiFiCredentials credentials, String idCode, b
             }
             else
             {
-                SysLogs::logWarning("Failed to connect to WiFi, but AP remains active");
+                Serial.println("Failed to connect to WiFi, but AP remains active");
             }
         }
     }
     else
     {
-        SysLogs::logInfo("NETWORK", "Configuring station mode only");
+        Serial.println("Configuring station mode only");
         WiFi.mode(WIFI_STA);
         delay(1000);
 
@@ -96,20 +98,13 @@ void NetworkConnections::setupWiFi(WiFiCredentials credentials, String idCode, b
 // Core Network Functions
 //------------------------------------------------------------------------------
 
-/**
- * @brief Load WiFi credentials from NVS (Non-Volatile Storage)
- * @return WiFiCredentials structure containing SSID, password, and validity flag
- *
- * Attempts to load WiFi credentials from ESP32's NVS storage. Returns a structure
- * with the valid flag set to false if credentials are missing or empty.
- */
 WiFiCredentials NetworkConnections::loadWiFiCredentials()
 {
     WiFiCredentials credentials;
     credentials.valid = false; // Default to invalid
 
     // Attempt to load credentials from NVS
-    SysLogs::logInfo("NETWORK", "Loading Credentials from NVS storage...");
+    Serial.println("Loading Credentials from NVS storage...");
     preferences.begin("wifi", true); // Read-only mode
     credentials.ssid = preferences.getString("ssid", "");
     credentials.password = preferences.getString("password", "");
@@ -118,12 +113,13 @@ WiFiCredentials NetworkConnections::loadWiFiCredentials()
     if (credentials.ssid.length() > 0 && credentials.password.length() > 0)
     {
         credentials.valid = true;
-        SysLogs::logSuccess("NETWORK", "Wi-Fi credentials loaded successfully from NVS.");
-        SysLogs::logInfo("NETWORK", "SSID: " + credentials.ssid);
+        Serial.println("Wi-Fi credentials loaded successfully from NVS.");
+        Serial.print("SSID: ");
+        Serial.println(credentials.ssid);
     }
     else
     {
-        SysLogs::logWarning("No Wi-Fi credentials found in NVS. Starting AP mode.");
+        Serial.println("No Wi-Fi credentials found in NVS. Starting AP mode.");
     }
 
     return credentials;
@@ -135,60 +131,59 @@ bool NetworkConnections::connectToNetwork(String ssid, String password)
     const unsigned long TIMEOUT = 20000; // 20 seconds in milliseconds
     unsigned long startAttempt = millis();
 
-    SysLogs::print("Attempting to connect to SSID: ");
-    SysLogs::println(ssid);
-
-    // Try to load and apply saved network configuration first
-    IPAddress savedIP, savedGateway, savedSubnet, savedDNS1, savedDNS2;
-    if (loadNetworkConfig(savedIP, savedGateway, savedSubnet, savedDNS1, savedDNS2))
+    // Build hostname from idCode if available, otherwise use default
+    DeviceSettings settings = loadDeviceSettings();
+    String hostname = "guardian";
+    if (settings.idCode.length() > 0)
     {
-        SysLogs::logInfo("NETWORK", " (using saved IP configuration)");
-        if (!WiFi.config(savedIP, savedGateway, savedSubnet, savedDNS1, savedDNS2))
-        {
-            SysLogs::logInfo("NETWORK", "Failed to configure static IP, falling back to DHCP");
-        }
-    }
-    else
-    {
-        SysLogs::logInfo("NETWORK", " (using DHCP)");
+        String code = settings.idCode;
+        code.toLowerCase();
+        hostname = "ggrelay";
     }
 
+    Serial.print("Attempting to connect to SSID: ");
+    Serial.print(ssid);
+
+    WiFi.setHostname(hostname.c_str());
     WiFi.begin(ssid.c_str(), password.c_str());
 
     // Wait for connection or timeout
     while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < TIMEOUT)
     {
-        SysLogs::print(".");
+        Serial.print(".");
         delay(500); // Check every 500ms
 
         // Print progress every 3 seconds
         if ((millis() - startAttempt) % 3000 == 0)
         {
-            SysLogs::println();
-            SysLogs::logInfo("NETWORK", "Still trying to connect... (" + String((millis() - startAttempt) / 1000.0, 1) + " seconds elapsed)");
+            Serial.printf("\nStill trying to connect... (%.1f seconds elapsed)\n",
+                          (millis() - startAttempt) / 1000.0);
         }
-
-        // Feed watchdog if available
-        esp_task_wdt_reset();
     }
-    SysLogs::println();
+    Serial.println();
 
     if (WiFi.status() == WL_CONNECTED)
     {
-
-        // Store successful connection details
-        lastConnectedSSID = ssid;
-        lastConnectedPassword = password;
-
-        // Save network configuration for future use
-        saveNetworkConfig(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), WiFi.dnsIP(0), WiFi.dnsIP(1));
-
+        Serial.print("Connected to WiFi network: ");
+        Serial.println(ssid);
         delay(1000); // Delay to allow connection to stabilize
+
+        // Start mDNS responder so the device is reachable at http://GGRelay.local
+        if (MDNS.begin(hostname.c_str())) // Hostname for mDNS
+        {
+            MDNS.addService("http", "tcp", 80);
+            Serial.printf("[mDNS] Responder started - device reachable at http://%s.local\n", hostname.c_str());
+        }
+        else
+        {
+            Serial.println("[mDNS] Failed to start mDNS responder");
+        }
+
         return true; // Successfully connected
     }
     else
     {
-        SysLogs::logInfo("NETWORK", "WiFi connection failed.");
+        Serial.println("WiFi connection failed.");
         WiFi.disconnect(); // Clean up the failed connection attempt
         return false;      // Connection failed
     }
@@ -196,27 +191,34 @@ bool NetworkConnections::connectToNetwork(String ssid, String password)
 
 void NetworkConnections::startWebServer()
 {
+
     // Check if web server is already running
     if (webServerStarted)
     {
-        SysLogs::logInfo("NETWORK", "[WEB] Web server is already running");
+        Serial.println("[WEB] Web server is already running");
         return;
     }
+    // Scan for available networks before starting the server
+    // scanNetworks(); // Scan for available networks
+    // delay(1000);    // Delay to allow scan to complete
 
-    SysLogs::logInfo("NETWORK", "[WEB] Starting web server on port 80...");
+    Serial.println("----------------------------------------------");
+    Serial.println("[WEB] Starting web server on port 80...");
 
     // Start the web server
     server.begin();
     webServerStarted = true;
 
-    SysLogs::logInfo("NETWORK", "[WEB] Web server started successfully");
-    SysLogs::print("[WEB] Access the device dashboard at: http://");
-    SysLogs::println(WiFi.localIP().toString());
-    SysLogs::logInfo("NETWORK", "[WEB] Available endpoints:");
-    SysLogs::logInfo("NETWORK", "[WEB]   / or /index    - Sensor data dashboard");
-    SysLogs::logInfo("NETWORK", "[WEB]   /data          - JSON API endpoint");
-    SysLogs::logInfo("NETWORK", "[WEB]   /config        - WiFi configuration");
-    SysLogs::logInfo("NETWORK", "[WEB]   /advanced      - Advanced device settings");
+    Serial.println("[WEB] Web server started successfully");
+    Serial.print("[WEB] Access the device dashboard at: http://");
+    Serial.println(WiFi.localIP());
+    Serial.println("[WEB] Available endpoints:");
+    Serial.println("[WEB]   / or /index    - Sensor data dashboard");
+    Serial.println("[WEB]   /data          - JSON API endpoint");
+    Serial.println("[WEB]   /config        - WiFi configuration");
+    Serial.println("[WEB]   /advanced      - Advanced device settings");
+    Serial.println("----------------------------------------------");
+    Serial.println(" ");
 }
 
 unsigned long NetworkConnections::getTime()
@@ -233,17 +235,17 @@ unsigned long NetworkConnections::getTime()
     const unsigned long MIN_VALID_TIME = 1577836800; // Jan 1, 2020 timestamp
     const unsigned long RETRY_DELAY_BASE = 2000;     // Base delay between retries (2 seconds)
 
-    SysLogs::logInfo("NETWORK", "Starting NTP time synchronization...");
+    Serial.println("Starting NTP time synchronization...");
 
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++)
     {
-        SysLogs::logInfo("NETWORK", "NTP sync attempt " + String(attempt) + "/" + String(MAX_RETRIES) + "");
+        Serial.printf("NTP sync attempt %d/%d\n", attempt, MAX_RETRIES);
 
         // Try each NTP server for this attempt
         for (int serverIndex = 0; serverIndex < numServers; serverIndex++)
         {
             const char *currentServer = ntpServers[serverIndex];
-            SysLogs::logInfo("NETWORK", "Trying NTP server: " + String(currentServer) + "");
+            Serial.printf("Trying NTP server: %s\n", currentServer);
 
             // Configure NTP time synchronization with UTC (no timezone offset)
             configTime(0, 0, currentServer);
@@ -253,7 +255,7 @@ unsigned long NetworkConnections::getTime()
             struct tm timeinfo;
             bool syncSuccess = false;
 
-            SysLogs::print("Waiting for sync");
+            Serial.print("Waiting for sync");
             while ((millis() - startTime < NTP_TIMEOUT))
             {
                 if (getLocalTime(&timeinfo))
@@ -261,17 +263,17 @@ unsigned long NetworkConnections::getTime()
                     syncSuccess = true;
                     break;
                 }
-                SysLogs::print(".");
+                Serial.print(".");
                 delay(500);
 
                 // Feed the watchdog timer to prevent reset during long sync attempts
                 esp_task_wdt_reset();
             }
-            SysLogs::println();
+            Serial.println();
 
             if (!syncSuccess)
             {
-                SysLogs::logWarning("NTP server " + String(currentServer) + " timed out after " + String(NTP_TIMEOUT) + " ms");
+                Serial.printf("NTP server %s timed out after %lu ms\n", currentServer, NTP_TIMEOUT);
                 continue; // Try next server
             }
 
@@ -279,22 +281,23 @@ unsigned long NetworkConnections::getTime()
             struct timeval tv;
             if (gettimeofday(&tv, NULL) != 0)
             {
-                SysLogs::logError("Failed to obtain time from " + String(currentServer) + " after sync");
+                Serial.printf("Failed to obtain time from %s after sync\n", currentServer);
                 continue; // Try next server
             }
 
             // Verify we got a reasonable time (after year 2020)
             if (tv.tv_sec < MIN_VALID_TIME)
             {
-                SysLogs::logWarning("NTP server " + String(currentServer) + " returned invalid time: " + String((unsigned long)tv.tv_sec) + " (before 2020)");
+                Serial.printf("NTP server %s returned invalid time: %lu (before 2020)\n",
+                              currentServer, (unsigned long)tv.tv_sec);
                 continue; // Try next server
             }
 
             // Success! Log the results
-            SysLogs::logSuccess("NETWORK", "NTP synchronization successful with " + String(currentServer) + "!");
-            SysLogs::logInfo("NETWORK", "Sync completed in " + String(millis() - startTime) + " ms");
-            SysLogs::logInfo("NETWORK", "Current time (Unix timestamp): " + String((unsigned long)tv.tv_sec));
-            SysLogs::logInfo("NETWORK", "Current time (Human-readable): " + String(ctime(&tv.tv_sec)));
+            Serial.printf("NTP synchronization successful with %s!\n", currentServer);
+            Serial.printf("Sync completed in %lu ms\n", millis() - startTime);
+            Serial.printf("Current time (Unix timestamp): %lu\n", (unsigned long)tv.tv_sec);
+            Serial.printf("Current time (Human-readable): %s", ctime(&tv.tv_sec));
 
             // The ESP32's RTC is automatically updated by configTime() and getLocalTime()
             return (unsigned long)tv.tv_sec;
@@ -305,7 +308,8 @@ unsigned long NetworkConnections::getTime()
         {
             // Calculate exponential backoff delay: base * 2^(attempt-1)
             unsigned long retryDelay = RETRY_DELAY_BASE * (1 << (attempt - 1));
-            SysLogs::logInfo("NETWORK", "All NTP servers failed for attempt " + String(attempt) + ". Retrying in " + String(retryDelay) + " ms...");
+            Serial.printf("All NTP servers failed for attempt %d. Retrying in %lu ms...\n",
+                          attempt, retryDelay);
 
             // Wait with watchdog feeding
             unsigned long delayStart = millis();
@@ -318,13 +322,13 @@ unsigned long NetworkConnections::getTime()
     }
 
     // All attempts failed
-    SysLogs::logInfo("NETWORK", "ERROR: NTP synchronization failed after all retry attempts!");
-    SysLogs::logInfo("NETWORK", "Possible causes:");
-    SysLogs::logInfo("NETWORK", "  - No internet connection");
-    SysLogs::logInfo("NETWORK", "  - DNS resolution failure");
-    SysLogs::logInfo("NETWORK", "  - NTP servers unreachable");
-    SysLogs::logInfo("NETWORK", "  - Firewall blocking NTP traffic");
-    SysLogs::logInfo("NETWORK", "Device will continue with RTC time if available.");
+    Serial.println("ERROR: NTP synchronization failed after all retry attempts!");
+    Serial.println("Possible causes:");
+    Serial.println("  - No internet connection");
+    Serial.println("  - DNS resolution failure");
+    Serial.println("  - NTP servers unreachable");
+    Serial.println("  - Firewall blocking NTP traffic");
+    Serial.println("Device will continue with RTC time if available.");
 
     return 0; // Return 0 to indicate failure
 }
@@ -334,7 +338,7 @@ unsigned long NetworkConnections::getRTCTime()
     struct timeval tv;
     if (gettimeofday(&tv, NULL) != 0)
     {
-        SysLogs::logInfo("NETWORK", "ERROR: Failed to read time from RTC");
+        Serial.println("ERROR: Failed to read time from RTC");
         return 0; // Return 0 if RTC read fails
     }
 
@@ -343,13 +347,13 @@ unsigned long NetworkConnections::getRTCTime()
     const unsigned long MIN_VALID_RTC_TIME = 1704067200;
     if (tv.tv_sec < MIN_VALID_RTC_TIME)
     {
-        SysLogs::logWarning("RTC time appears invalid (" + String((unsigned long)tv.tv_sec) + " - before 2024)");
-        SysLogs::logInfo("NETWORK", "This may indicate the RTC was never synchronized or has lost power");
+        Serial.printf("WARNING: RTC time appears invalid (%lu - before 2024)\n", (unsigned long)tv.tv_sec);
+        Serial.println("This may indicate the RTC was never synchronized or has lost power");
         return 0;
     }
 
     // Log successful RTC read
-    // SysLogs::logInfo("NETWORK", "RTC time read successfully: %lu (%s)", (unsigned long)tv.tv_sec, ctime(&tv.tv_sec));
+    // Serial.printf("RTC time read successfully: %lu (%s)", (unsigned long)tv.tv_sec, ctime(&tv.tv_sec));
 
     return (unsigned long)tv.tv_sec;
 }
@@ -531,8 +535,8 @@ void NetworkConnections::setupAP(String idCode)
     apSSID = AP_SSID + idCode;
 
     // print the network name (SSID);
-    SysLogs::print("Creating access point named: ");
-    SysLogs::println(apSSID);
+    Serial.print("Creating access point named: ");
+    Serial.println(apSSID);
 
     WiFi.mode(WIFI_AP); // Set ESP32 to AP mode
 
@@ -547,7 +551,7 @@ void NetworkConnections::setupAP(String idCode)
 
     if (!status)
     {
-        SysLogs::logInfo("NETWORK", "Creating access point failed");
+        Serial.println("Creating access point failed");
         return;
     }
     apMode = true;
@@ -556,11 +560,11 @@ void NetworkConnections::setupAP(String idCode)
     server.begin();
     webServerStarted = true; // Mark web server as started
 
-    SysLogs::logInfo("NETWORK", "Access Point started successfully");
-    SysLogs::print("AP SSID: ");
-    SysLogs::println(apSSID);
-    SysLogs::print("AP IP Address: ");
-    SysLogs::println(WiFi.softAPIP().toString());
+    Serial.println("Access Point started successfully");
+    Serial.print("AP SSID: ");
+    Serial.println(apSSID);
+    Serial.print("AP IP Address: ");
+    Serial.println(WiFi.softAPIP());
 }
 
 void NetworkConnections::scanNetworks()
@@ -569,22 +573,22 @@ void NetworkConnections::scanNetworks()
     WiFi.disconnect();
     delay(100);
 
-    SysLogs::logInfo("NETWORK", "Scanning for WiFi networks...");
+    Serial.println("Scanning for WiFi networks...");
     esp_task_wdt_reset(); // Feed the watchdog in the loop
 
     int numNetworks = WiFi.scanNetworks();
 
-    SysLogs::print("Number of networks found: ");
-    SysLogs::println(String(numNetworks));
+    Serial.print("Number of networks found: ");
+    Serial.println(numNetworks);
 
     if (numNetworks <= 0)
     {
-        SysLogs::logInfo("NETWORK", "No networks found or scan failed.");
+        Serial.println("No networks found or scan failed.");
         availableNetworks = "<option value=''>No Networks Found</option>";
     }
     else
     {
-        SysLogs::logInfo("NETWORK", "Networks found:");
+        Serial.println("Networks found:");
         availableNetworks = ""; // Clear previous results
 
         for (int i = 0; i < numNetworks; i++)
@@ -597,15 +601,15 @@ void NetworkConnections::scanNetworks()
             availableNetworks += WiFi.SSID(i);
             availableNetworks += "</option>";
 
-            SysLogs::print(String(i + 1));
-            SysLogs::print(": ");
-            SysLogs::print(WiFi.SSID(i));
-            SysLogs::print(" (RSSI: ");
-            SysLogs::print(String(WiFi.RSSI(i)));
-            SysLogs::print(" dBm) ");
-            SysLogs::print(" [");
-            SysLogs::print(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "Open" : "Secured");
-            SysLogs::logInfo("NETWORK", "]");
+            Serial.print(i + 1);
+            Serial.print(": ");
+            Serial.print(WiFi.SSID(i));
+            Serial.print(" (RSSI: ");
+            Serial.print(WiFi.RSSI(i));
+            Serial.print(" dBm) ");
+            Serial.print(" [");
+            Serial.print(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "Open" : "Secured");
+            Serial.println("]");
             delay(10);
         }
     }
@@ -616,7 +620,7 @@ void NetworkConnections::handleClientRequests()
     WiFiClient client = server.available();
     if (client)
     {
-        SysLogs::logInfo("NETWORK", "New Client Connected!");
+        Serial.println("New Client Connected!");
         String request = "";
         unsigned long timeout = millis() + 5000; // 5-second timeout
 
@@ -630,8 +634,8 @@ void NetworkConnections::handleClientRequests()
             }
         }
 
-        SysLogs::logInfo("NETWORK", "Full HTTP Request:");
-        SysLogs::println(request);
+        Serial.println("Full HTTP Request:");
+        Serial.println(request);
 
         if (request.indexOf("GET /") >= 0)
         {
@@ -644,7 +648,7 @@ void NetworkConnections::handleClientRequests()
 
         delay(100);
         client.stop();
-        SysLogs::logInfo("NETWORK", "Client Disconnected.");
+        Serial.println("Client Disconnected.");
     }
 }
 
@@ -696,9 +700,10 @@ void NetworkConnections::sendWiFiConfigPage(WiFiClient &client)
     client.println("<button type='submit' id='submitButton' disabled>Save & Connect</button>");
     client.println("</form>");
 
-    // Link to advanced settings
+    // Navigation links
     client.println("<div style='margin-top: 20px; text-align: center;'>");
-    client.println("<a href='/advanced' style='text-decoration: none; color: #208dbf; font-size: 14px;'>⚙️ Advanced Device Settings</a>");
+    client.println("<a href='/' style='text-decoration: none; color: #3F9E3F; font-size: 14px; margin-right: 15px;'>🏠 Back to Dashboard</a>");
+    client.println("<a href='/advanced' style='text-decoration: none; color: #3F9E3F; font-size: 14px;'>⚙️ Advanced Device Settings</a>");
     client.println("</div>");
 
     sendPageFooter(client);
@@ -706,20 +711,20 @@ void NetworkConnections::sendWiFiConfigPage(WiFiClient &client)
 
 void NetworkConnections::processWiFiConfig(WiFiClient &client, String request)
 {
-    SysLogs::logInfo("NETWORK", "Received Wi-Fi Configuration Request:");
-    SysLogs::println(request); // Log the full request
+    Serial.println("Received Wi-Fi Configuration Request:");
+    Serial.println(request); // Log the full request
 
     // **Step 1: Extract the POST body correctly**
     int bodyIndex = request.indexOf("\r\n\r\n"); // Find where headers end
     if (bodyIndex == -1)
     {
-        SysLogs::logInfo("NETWORK", "Error: Could not locate POST body.");
+        Serial.println("Error: Could not locate POST body.");
         return;
     }
     request = request.substring(bodyIndex + 4); // The actual POST data
 
-    SysLogs::logInfo("NETWORK", "Extracted POST Body:");
-    SysLogs::println(request); // Should now show 'ssid=MySSID&password=MyPass'
+    Serial.println("Extracted POST Body:");
+    Serial.println(request); // Should now show 'ssid=MySSID&password=MyPass'
 
     String ssid = "";
     String password = "";
@@ -773,10 +778,10 @@ void NetworkConnections::processWiFiConfig(WiFiClient &client, String request)
         password = urlDecode(password);
     }
 
-    SysLogs::print("Extracted SSID: ");
-    SysLogs::println(ssid);
-    SysLogs::print("Extracted Password: ");
-    SysLogs::println(password);
+    Serial.print("Extracted SSID: ");
+    Serial.println(ssid);
+    Serial.print("Extracted Password: ");
+    Serial.println(password);
 
     // **Step 4: Validate and Save**
     if (ssid.length() > 0 && password.length() > 0)
@@ -836,120 +841,154 @@ void NetworkConnections::saveWiFiCredentials(String ssid, String password)
 {
 
     // Save to NVS
-    SysLogs::logInfo("NETWORK", "Saving Wi-Fi credentials to NVS...");
+    Serial.println("Saving Wi-Fi credentials to NVS...");
     preferences.begin("wifi", false); // Read-write mode
     preferences.putString("ssid", ssid);
     preferences.putString("password", password);
     preferences.end();
-    SysLogs::logInfo("NETWORK", "Wi-Fi credentials successfully saved to NVS.");
+    Serial.println("Wi-Fi credentials successfully saved to NVS.");
 }
 
 void NetworkConnections::saveDeviceSettings(const DeviceSettings &settings)
 {
-    SysLogs::logInfo("NETWORK", "Saving device settings to NVS...");
-    preferences.begin("device", false); // Read-write mode
-    preferences.putULong64("sleepDur", settings.sleepDuration);
-    preferences.putULong("sensorInt", settings.sensorReadInterval);
-    preferences.putULong("stabilTime", settings.sensorStabilizationTime);
+    Serial.println("Saving device settings to NVS...");
+    preferences.begin("device", false); // Read-write mode    preferences.putULong64("sleepDuration", settings.sleepDuration);
+    preferences.putULong("sensorInterval", settings.sensorReadInterval);
+    preferences.putULong("stabilizationTime", settings.sensorStabilizationTime);
     preferences.putString("deviceID", settings.deviceID);
     preferences.putString("idCode", settings.idCode);
-    preferences.putBool("ntpRetry", settings.ntpRetryEnabled);
-    preferences.putULong("ntpRetryInt", settings.ntpRetryInterval);
-    preferences.putBool("httpPubEn", settings.httpPublishEnabled);
-    preferences.putULong("httpPubInt", settings.httpPublishInterval);
+    preferences.putBool("ntpRetryEnabled", settings.ntpRetryEnabled);
+    preferences.putULong("ntpRetryInterval", settings.ntpRetryInterval);
+    preferences.putBool("httpPublishEnabled", settings.httpPublishEnabled);
+    preferences.putULong("httpPublishInterval", settings.httpPublishInterval);
+
+    // Save target values
+    preferences.putFloat("targetTDS", settings.targetTDS);
+    preferences.putFloat("targetAirTemp", settings.targetAirTemp);
+    preferences.putFloat("targetNFTTemp", settings.targetNFTResTemp);
+    preferences.putFloat("targetDWCTemp", settings.targetDWCResTemp);
+
+    // Save relay schedule hours
+    preferences.putULong("relayOnHour", settings.relayScheduleOnHour);
+    preferences.putULong("relayOffHour", settings.relayScheduleOffHour);
 
     preferences.end();
-    SysLogs::logInfo("NETWORK", "Device settings successfully saved to NVS.");
-}
-
-// Helper functions for NVS key checking with different data types
-uint64_t NetworkConnections::checkNVSKeyULong64(const char *keyName, uint64_t defaultValue, const char *settingName)
-{
-    if (!preferences.isKey(keyName))
-    {
-        preferences.putULong64(keyName, defaultValue);
-        SysLogs::logInfo("NETWORK", "Created default setting: " + String(settingName));
-        return defaultValue;
-    }
-    return preferences.getULong64(keyName, defaultValue);
-}
-
-unsigned long NetworkConnections::checkNVSKeyULong(const char *keyName, unsigned long defaultValue, const char *settingName)
-{
-    if (!preferences.isKey(keyName))
-    {
-        preferences.putULong(keyName, defaultValue);
-        SysLogs::logInfo("NETWORK", "Created default setting: " + String(settingName));
-        return defaultValue;
-    }
-    return preferences.getULong(keyName, defaultValue);
-}
-
-String NetworkConnections::checkNVSKeyString(const char *keyName, const String &defaultValue, const char *settingName)
-{
-    if (!preferences.isKey(keyName))
-    {
-        preferences.putString(keyName, defaultValue);
-        SysLogs::logInfo("NETWORK", "Created default setting: " + String(settingName));
-        return defaultValue;
-    }
-    return preferences.getString(keyName, defaultValue);
-}
-
-bool NetworkConnections::checkNVSKeyBool(const char *keyName, bool defaultValue, const char *settingName)
-{
-    if (!preferences.isKey(keyName))
-    {
-        preferences.putBool(keyName, defaultValue);
-        SysLogs::logInfo("NETWORK", "Created default setting: " + String(settingName));
-        return defaultValue;
-    }
-    return preferences.getBool(keyName, defaultValue);
+    Serial.println("Device settings successfully saved to NVS.");
 }
 
 DeviceSettings NetworkConnections::loadDeviceSettings()
 {
     DeviceSettings settings;
-    SysLogs::logInfo("NETWORK", "Loading device settings from NVS storage...");
-    preferences.begin("device", false); // Read-write mode to allow saving defaults
+    settings.valid = false; // Default to invalid
 
-    // Load each setting using helper functions - they handle defaults automatically
-    settings.sleepDuration = checkNVSKeyULong64("sleepDur", 15ULL * 1000000ULL, "sleepDur");
-    settings.sensorReadInterval = checkNVSKeyULong("sensorInt", 60000, "sensorInt");
-    settings.sensorStabilizationTime = checkNVSKeyULong("stabilTime", 15000, "stabilTime");
-    settings.deviceID = checkNVSKeyString("deviceID", DEVICE_ID, "deviceID");
-    settings.idCode = checkNVSKeyString("idCode", IDCODE, "idCode");
-    settings.ntpRetryEnabled = checkNVSKeyBool("ntpRetry", true, "ntpRetry");
-    settings.ntpRetryInterval = checkNVSKeyULong("ntpRetryInt", 3600000, "ntpRetryInt");
-    settings.httpPublishEnabled = checkNVSKeyBool("httpPubEn", true, "httpPubEn");
-    settings.httpPublishInterval = checkNVSKeyULong("httpPubInt", 60000, "httpPubInt");
+    Serial.println("Loading device settings from NVS storage...");
+    preferences.begin("device", true); // Read-only mode    settings.sleepDuration = preferences.getULong64("sleepDuration", 15ULL * 1000000ULL);
+    settings.sensorReadInterval = preferences.getULong("sensorInterval", 30000);
+    settings.sensorStabilizationTime = preferences.getULong("stabilizationTime", 60000);
+    settings.deviceID = preferences.getString("deviceID", DEVICE_ID);
+    settings.idCode = preferences.getString("idCode", IDCODE);
+    settings.ntpRetryEnabled = preferences.getBool("ntpRetryEnabled", true);
+    settings.ntpRetryInterval = preferences.getULong("ntpRetryInterval", 3600000);
+    settings.httpPublishEnabled = preferences.getBool("httpPublishEnabled", true);
+    settings.httpPublishInterval = preferences.getULong("httpPublishInterval", 300000);
+
+    // Load target values with error handling
+    if (preferences.isKey("targetTDS"))
+        settings.targetTDS = preferences.getFloat("targetTDS", 500.0);
+    else
+        settings.targetTDS = 500.0;
+
+    if (preferences.isKey("targetAirTemp"))
+        settings.targetAirTemp = preferences.getFloat("targetAirTemp", 25.0);
+    else
+        settings.targetAirTemp = 25.0;
+
+    if (preferences.isKey("targetNFTTemp"))
+        settings.targetNFTResTemp = preferences.getFloat("targetNFTTemp", 18.0);
+    else
+        settings.targetNFTResTemp = 18.0;
+
+    if (preferences.isKey("targetDWCTemp"))
+        settings.targetDWCResTemp = preferences.getFloat("targetDWCTemp", 18.0);
+    else
+        settings.targetDWCResTemp = 18.0;
+
+    settings.relayScheduleOnHour = preferences.getULong("relayOnHour", 0);
+    settings.relayScheduleOffHour = preferences.getULong("relayOffHour", 18);
 
     preferences.end();
 
-    // Settings are always valid since helper functions ensure they exist
-    settings.valid = true;
-    SysLogs::logInfo("NETWORK", "Device settings loaded successfully from NVS.");
+    // Check if we have at least some custom settings (not all defaults)
+    if (preferences.begin("device", true))
+    {
+        bool hasSettings = preferences.isKey("sleepDuration") ||
+                           preferences.isKey("sensorInterval") ||
+                           preferences.isKey("deviceID");
+        preferences.end();
 
-    // Display loaded settings
-    // SysLogs::print("Sleep Duration: ");
-    // SysLogs::print(String(settings.sleepDuration / 1000000ULL));
-    // SysLogs::logInfo("NETWORK", " seconds");
-    // SysLogs::print("Sensor Read Interval: ");
-    // SysLogs::print(String(settings.sensorReadInterval / 1000));
-    // SysLogs::logInfo("NETWORK", " seconds");
-    // SysLogs::print("Stabilization Time: ");
-    // SysLogs::print(String(settings.sensorStabilizationTime / 1000));
-    // SysLogs::logInfo("NETWORK", " seconds");
-    // SysLogs::print("Device ID: ");
-    // SysLogs::println(settings.deviceID);
-    // SysLogs::print("ID Code: ");
-    // SysLogs::println(settings.idCode);
-    // SysLogs::print("NTP Retry Enabled: ");
-    // SysLogs::println(settings.ntpRetryEnabled ? "Yes" : "No");
-    // SysLogs::print("HTTP Publish Enabled: ");
-    // SysLogs::println(settings.httpPublishEnabled ? "Yes" : "No");
+        if (hasSettings)
+        {
+            settings.valid = true;
+            Serial.println("Device settings loaded successfully from NVS.");
+            Serial.print("Sleep Duration: ");
+            Serial.print(settings.sleepDuration / 1000000ULL);
+            Serial.println(" seconds");
+            Serial.print("Sensor Read Interval: ");
+            Serial.print(settings.sensorReadInterval / 1000);
+            Serial.println(" seconds");
+            Serial.print("Stabilization Time: ");
+            Serial.print(settings.sensorStabilizationTime / 1000);
+            Serial.println(" seconds");
+            Serial.print("Device ID: ");
+            Serial.println(settings.deviceID);
+            Serial.print("ID Code: ");
+            Serial.println(settings.idCode);
+        }
+        else
+        {
+            Serial.println("No custom device settings found in NVS. Using defaults.");
+        }
+    }
 
     return settings;
+}
+
+void NetworkConnections::saveTargetValues(float targetTDS, float targetAirTemp, float targetNFTResTemp, float targetDWCResTemp)
+{
+    Serial.println("Saving target values to NVS...");
+    preferences.begin("device", false); // Read-write mode
+
+    // Clean up old long key names that might be corrupted
+    if (preferences.isKey("targetNFTResTemp"))
+    {
+        preferences.remove("targetNFTResTemp");
+        Serial.println("Removed old targetNFTResTemp key");
+    }
+    if (preferences.isKey("targetDWCResTemp"))
+    {
+        preferences.remove("targetDWCResTemp");
+        Serial.println("Removed old targetDWCResTemp key");
+    }
+
+    preferences.putFloat("targetTDS", targetTDS);
+    preferences.putFloat("targetAirTemp", targetAirTemp);
+    preferences.putFloat("targetNFTTemp", targetNFTResTemp);
+    preferences.putFloat("targetDWCTemp", targetDWCResTemp);
+
+    preferences.end();
+    Serial.println("Target values successfully saved to NVS.");
+    Serial.printf("Saved values - TDS: %.1f ppm, Air: %.1f°C, NFT: %.1f°C, DWC: %.1f°C\n",
+                  targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
+}
+
+void NetworkConnections::saveRelaySchedule(unsigned long onHour, unsigned long offHour)
+{
+    Serial.println("Saving relay schedule to NVS...");
+    preferences.begin("device", false);
+    preferences.putULong("relayOnHour", onHour);
+    preferences.putULong("relayOffHour", offHour);
+    preferences.end();
+    Serial.printf("Relay schedule saved - ON: %lu:00, OFF: %lu:00\n", onHour, offHour);
 }
 
 //------------------------------------------------------------------------------
@@ -1000,17 +1039,18 @@ bool NetworkConnections::isConnected()
 // Add this helper function to keep the code DRY
 void NetworkConnections::printNetworkInfo()
 {
-    SysLogs::logInfo("NETWORK", "---------------Network Info-------------");
-    SysLogs::print("SSID: ");
-    SysLogs::println(WiFi.SSID());
+    Serial.println("---------------Network Info-------------");
+    Serial.print("SSID: ");
+    Serial.println(WiFi.SSID());
 
     IPAddress ip = WiFi.localIP();
-    SysLogs::print("IP Address: ");
-    SysLogs::println(ip.toString());
+    Serial.print("IP Address: ");
+    Serial.println(ip);
 
-    SysLogs::print("Signal Strength (RSSI): ");
-    SysLogs::println(String(WiFi.RSSI()) + " dBm");
-    SysLogs::logInfo("NETWORK", "----------------------------------------");
+    Serial.print("Signal Strength (RSSI): ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+    Serial.println("----------------------------------------");
 }
 
 //------------------------------------------------------------------------------
@@ -1022,11 +1062,12 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
     WiFiClient client = server.available();
     if (client)
     {
-        SysLogs::logInfo("NETWORK", "New Client Connected!");
+        Serial.println("New Client Connected!");
         String request = "";
-        unsigned long timeout = millis() + 5000; // 5-second timeout
+        unsigned long timeout = millis() + 3000; // 3-second timeout for initial connection
+        bool headerComplete = false;
 
-        // Read the full request (including headers & body)
+        // Read the request headers first
         while (client.connected() && millis() < timeout)
         {
             if (client.available())
@@ -1034,22 +1075,85 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
                 char c = client.read();
                 request += c;
 
-                // Check if we have received the complete request
+                // Reset timeout when we're actively receiving data
+                timeout = millis() + 1000; // 1 second timeout for additional data
+
+                // Check if we have received the complete request headers
                 if (request.endsWith("\r\n\r\n"))
                 {
+                    headerComplete = true;
                     break;
                 }
             }
-            delay(1);
+            else
+            {
+                delay(1); // Small delay to prevent busy waiting
+            }
         }
 
-        SysLogs::logInfo("NETWORK", "Full HTTP Request:");
-        SysLogs::println(request); // Handle different routes
+        // Handle empty or incomplete requests (common with browser preflight requests)
+        if (request.length() == 0)
+        {
+            // Don't log empty requests as they're often just browser probes
+            client.stop();
+            return;
+        }
+
+        if (!headerComplete)
+        {
+            Serial.println("Incomplete request received - timeout");
+            client.println("HTTP/1.1 408 Request Timeout");
+            client.println("Connection: close");
+            client.println();
+            client.stop();
+            return;
+        }
+
+        // For POST requests, read the body data based on Content-Length
+        if (request.indexOf("POST") >= 0)
+        {
+            int contentLengthStart = request.indexOf("Content-Length: ");
+            if (contentLengthStart >= 0)
+            {
+                contentLengthStart += 16; // Move past "Content-Length: "
+                int contentLengthEnd = request.indexOf("\r\n", contentLengthStart);
+                if (contentLengthEnd > contentLengthStart)
+                {
+                    String contentLengthStr = request.substring(contentLengthStart, contentLengthEnd);
+                    int contentLength = contentLengthStr.toInt();
+
+                    if (contentLength > 0 && contentLength < 1024) // Reasonable limit
+                    {
+                        Serial.printf("Reading POST body, Content-Length: %d\n", contentLength);
+                        timeout = millis() + 2000; // 2 second timeout for body
+
+                        while (client.connected() && millis() < timeout && contentLength > 0)
+                        {
+                            if (client.available())
+                            {
+                                char c = client.read();
+                                request += c;
+                                contentLength--;
+                                timeout = millis() + 1000; // Reset timeout when receiving data
+                            }
+                            else
+                            {
+                                delay(1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Serial.println("Full HTTP Request:");
+        Serial.println(request); // Handle different routes
 
         if (request.indexOf("GET / HTTP") >= 0 || request.indexOf("GET /index") >= 0)
         {
             // Main sensor data page
-            sendSensorDataPage(client, readings);
+            DeviceSettings settings = loadDeviceSettings();
+            sendSensorDataPage(client, readings, settings);
         }
         else if (request.indexOf("GET /data") >= 0)
         {
@@ -1077,6 +1181,11 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
             // Process advanced configuration
             processAdvancedConfig(client, request);
         }
+        else if (request.indexOf("POST /quick-controls") >= 0)
+        {
+            // Process quick controls (target values)
+            processQuickControls(client, request);
+        }
         else
         {
             // 404 - Not Found
@@ -1087,25 +1196,28 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
             client.println("<html><body><h1>404 - Page Not Found</h1></body></html>");
         }
 
-        delay(100);
+        // Give client time to receive response before closing connection
+        client.flush(); // Ensure all data is sent
+        delay(50);      // Brief delay to ensure transmission completion
         client.stop();
-        SysLogs::logInfo("NETWORK", "Client Disconnected.");
+        Serial.println("Client Disconnected.");
     }
 }
 
-void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestReadings &readings)
+void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestReadings &readings, const DeviceSettings &settings)
 {
     sendHTTPHeader(client);
     client.println("<html><head>");
     client.println("<meta charset='UTF-8'>");
-    client.println("<title>Garden Guardian - Sensor Data</title>");
+    client.println("<title>Garden Guardian</title>");
     client.println("<meta name='viewport' content='width=device-width, initial-scale=1'>");
-    client.println("<meta http-equiv='refresh' content='30'>"); // Auto-refresh every 30 seconds
+    client.println("<meta http-equiv='refresh' content='60'>"); // Auto-refresh every 60 seconds
     client.println("<style>");
 
     // Enhanced CSS for sensor data display
     client.println("body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f2f5; }");
-    client.println(".header { background: linear-gradient(135deg, #208dbf, #1e7ba8); color: white; padding: 20px; text-align: center; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }");
+    client.println(".header { background: linear-gradient(135deg, #3F9E3F, #2d7a2d); color: white; padding: 20px; text-align: center; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }");
+    client.println(".header-logo { width: 60px; height: 60px; margin-bottom: 10px; border-radius: 8px; }");
     client.println(".container { max-width: 1200px; margin: 0 auto; }");
     client.println(".sensor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 20px; }");
     client.println(".sensor-card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); transition: transform 0.2s; }");
@@ -1114,20 +1226,52 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
     client.println(".sensor-value { font-size: 32px; font-weight: bold; margin: 10px 0; }");
     client.println(".sensor-unit { font-size: 14px; color: #666; margin-left: 5px; }");
     client.println(".sensor-timestamp { font-size: 12px; color: #888; margin-top: 10px; }");
-    client.println(".status-ok { color: #28a745; }");
+    client.println(".status-ok { color: #3F9E3F; }");
     client.println(".status-warning { color: #ffc107; }");
     client.println(".status-error { color: #dc3545; }");
     client.println(".info-section { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }");
     client.println(".nav-buttons { text-align: center; margin: 20px 0; }");
-    client.println(".nav-buttons a { display: inline-block; background: #208dbf; color: white; text-decoration: none; padding: 10px 20px; margin: 0 10px; border-radius: 5px; transition: background 0.2s; }");
-    client.println(".nav-buttons a:hover { background: #1e7ba8; }");
+    client.println(".nav-buttons a { display: inline-block; background: #3F9E3F; color: white; text-decoration: none; padding: 10px 20px; margin: 0 10px; border-radius: 5px; transition: background 0.2s; }");
+    client.println(".nav-buttons a:hover { background: #2d7a2d; }");
     client.println("</style>");
     client.println("</head><body>");
 
     client.println("<div class='container'>");
     client.println("<div class='header'>");
+    client.println("<img src='https://i.ibb.co/KxFvkcsQ/pwa-512x512.png' alt='Garden Guardian Logo' class='header-logo'>");
     client.println("<h1>Garden Guardian</h1>");
-    client.println("<p>Temperature & Humidity Monitor</p>");
+
+    // Dynamic subtitle based on enabled modules
+    client.print("<p>");
+    bool firstModule = true;
+#if TEMP_DISPLAY
+    if (!firstModule)
+        client.print(" & ");
+    client.print("Temperature");
+    firstModule = false;
+#endif
+#if HUMIDITY_DISPLAY
+    if (!firstModule)
+        client.print(" & ");
+    client.print("Humidity");
+    firstModule = false;
+#endif
+#if TDS_DISPLAY
+    if (!firstModule)
+        client.print(" & ");
+    client.print("TDS");
+    firstModule = false;
+#endif
+#if WATER_TEMP_DISPLAY
+    if (!firstModule)
+        client.print(" & ");
+    client.print("Water Temperature");
+    firstModule = false;
+#endif
+    if (firstModule)
+        client.print("System");
+    client.print(" Monitor</p>");
+
     client.println("</div>");
     // Navigation buttons
     client.println("<div class='nav-buttons'>");
@@ -1135,7 +1279,245 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
     client.println("<a href='/data'>JSON Data</a>");
     client.println("<a href='/config'>WiFi Config</a>");
     client.println("<a href='/advanced'>Advanced Settings</a>");
-    client.println("</div>"); // System info section
+    client.println("</div>");
+
+    // Sensor data grid
+    client.println("<div class='sensor-grid'>");
+
+// Temperature Card
+#if TEMP_DISPLAY
+    client.println("<div class='sensor-card'>");
+    client.println("<div class='sensor-title'>🌡️ Temperature</div>");
+
+    client.print("<div class='sensor-value ");
+    client.print(getStatusColor(readings.temperatureStatus));
+    client.print("'>");
+    if (!isnan(readings.temperature))
+    {
+        client.print(readings.temperature, 1);
+        client.print("<span class='sensor-unit'>°C</span>");
+    }
+    else
+    {
+        client.print("--");
+    }
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Status: ");
+    client.print(getStatusText(readings.temperatureStatus));
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Last reading: ");
+    client.print(formatTimestamp(readings.temperatureTimestamp));
+    client.println("</div>");
+
+    client.println("</div>");
+#endif
+
+// Humidity Card
+#if HUMIDITY_DISPLAY
+    client.println("<div class='sensor-card'>");
+    client.println("<div class='sensor-title'>💧 Humidity</div>");
+
+    client.print("<div class='sensor-value ");
+    client.print(getStatusColor(readings.humidityStatus));
+    client.print("'>");
+    if (!isnan(readings.humidity))
+    {
+        client.print(readings.humidity, 1);
+        client.print("<span class='sensor-unit'>%</span>");
+    }
+    else
+    {
+        client.print("--");
+    }
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Status: ");
+    client.print(getStatusText(readings.humidityStatus));
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Last reading: ");
+    client.print(formatTimestamp(readings.humidityTimestamp));
+    client.println("</div>");
+
+    client.println("</div>");
+#endif
+
+// TDS Card
+#if TDS_DISPLAY
+    client.println("<div class='sensor-card'>");
+    client.println("<div class='sensor-title'>🔬 TDS (Total Dissolved Solids)</div>");
+
+    client.print("<div class='sensor-value ");
+    client.print(getStatusColor(readings.tdsStatus));
+    client.print("'>");
+    if (!isnan(readings.tds))
+    {
+        client.print(readings.tds, 0);
+        client.print("<span class='sensor-unit'>ppm</span>");
+    }
+    else
+    {
+        client.print("--");
+    }
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Target: ");
+    client.print(settings.targetTDS, 0);
+    client.println(" ppm</div>");
+
+    client.print("<div class='sensor-timestamp'>Status: ");
+    client.print(getStatusText(readings.tdsStatus));
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Last reading: ");
+    client.print(formatTimestamp(readings.tdsTimestamp));
+    client.println("</div>");
+
+    client.println("</div>");
+#endif
+
+// Water Temperature Card
+#if WATER_TEMP_DISPLAY
+    client.println("<div class='sensor-card'>");
+    client.println("<div class='sensor-title'>🌊 Water Temperature</div>");
+
+    client.print("<div class='sensor-value ");
+    client.print(getStatusColor(readings.waterTemperatureStatus));
+    client.print("'>");
+    if (!isnan(readings.waterTemperature))
+    {
+        client.print(readings.waterTemperature, 1);
+        client.print("<span class='sensor-unit'>°C</span>");
+    }
+    else
+    {
+        client.print("--");
+    }
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Status: ");
+    client.print(getStatusText(readings.waterTemperatureStatus));
+    client.println("</div>");
+
+    client.print("<div class='sensor-timestamp'>Last reading: ");
+    client.print(formatTimestamp(readings.waterTemperatureTimestamp));
+    client.println("</div>");
+
+    client.println("</div>");
+#endif
+
+    client.println("</div>"); // End sensor-grid
+
+    // Quick Controls section
+    client.println("<div class='info-section'>");
+    client.println("<h3>⚡ Quick Controls</h3>");
+    client.println("<p>Set target values for your system. Changes are saved automatically and do not require a restart.</p>");
+
+    client.println("<form id='quickControlsForm' style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px;'>");
+
+#if TDS_DISPLAY
+    client.println("<div>");
+    client.println("<label for='targetTDS' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Target TDS (ppm):</label>");
+    client.print("<input type='number' id='targetTDS' name='targetTDS' value='");
+    client.print(settings.targetTDS, 0);
+    client.println("' min='100' max='2000' step='10' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+#endif
+
+#if TEMP_DISPLAY
+    client.println("<div>");
+    client.println("<label for='targetAirTemp' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Target Air Temp (°C):</label>");
+    client.print("<input type='number' id='targetAirTemp' name='targetAirTemp' value='");
+    client.print(settings.targetAirTemp, 1);
+    client.println("' min='10' max='40' step='0.5' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+#endif
+
+#if WATER_TEMP_DISPLAY
+    client.println("<div>");
+    client.println("<label for='targetNFTResTemp' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Target NFT Res Temp (°C):</label>");
+    client.print("<input type='number' id='targetNFTResTemp' name='targetNFTResTemp' value='");
+    client.print(settings.targetNFTResTemp, 1);
+    client.println("' min='10' max='30' step='0.5' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+
+    client.println("<div>");
+    client.println("<label for='targetDWCResTemp' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Target DWC Res Temp (°C):</label>");
+    client.print("<input type='number' id='targetDWCResTemp' name='targetDWCResTemp' value='");
+    client.print(settings.targetDWCResTemp, 1);
+    client.println("' min='10' max='30' step='0.5' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+#endif
+
+    client.println("<div>");
+    client.println("<label for='relayScheduleOnHour' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Relay Schedule ON Hour (0-23):</label>");
+    client.print("<input type='number' id='relayScheduleOnHour' name='relayScheduleOnHour' value='");
+    client.print(settings.relayScheduleOnHour);
+    client.println("' min='0' max='23' step='1' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+
+    client.println("<div>");
+    client.println("<label for='relayScheduleOffHour' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Relay Schedule OFF Hour (0-23):</label>");
+    client.print("<input type='number' id='relayScheduleOffHour' name='relayScheduleOffHour' value='");
+    client.print(settings.relayScheduleOffHour);
+    client.println("' min='0' max='23' step='1' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
+    client.println("</div>");
+
+    client.println("</form>");
+
+    client.println("<div style='text-align: center; margin-top: 15px;'>");
+    client.println("<button id='saveTargetsBtn' onclick='saveTargetValues()' style='background: #3F9E3F; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;'>Save Target Values</button>");
+    client.println("<div id='saveStatus' style='margin-top: 10px; font-weight: bold;'></div>");
+    client.println("</div>");
+    client.println("</div>");
+
+    // JavaScript for quick controls
+    client.println("<script>");
+    client.println("function saveTargetValues() {");
+    client.println("  const btn = document.getElementById('saveTargetsBtn');");
+    client.println("  const status = document.getElementById('saveStatus');");
+    client.println("  ");
+    client.println("  btn.disabled = true;");
+    client.println("  btn.textContent = 'Saving...';");
+    client.println("  status.textContent = '';");
+    client.println("  ");
+    client.println("  const data = new URLSearchParams();");
+#if TDS_DISPLAY
+    client.println("  data.append('targetTDS', document.getElementById('targetTDS').value);");
+#endif
+#if TEMP_DISPLAY
+    client.println("  data.append('targetAirTemp', document.getElementById('targetAirTemp').value);");
+#endif
+#if WATER_TEMP_DISPLAY
+    client.println("  data.append('targetNFTResTemp', document.getElementById('targetNFTResTemp').value);");
+    client.println("  data.append('targetDWCResTemp', document.getElementById('targetDWCResTemp').value);");
+#endif
+    client.println("  data.append('relayScheduleOnHour', document.getElementById('relayScheduleOnHour').value);");
+    client.println("  data.append('relayScheduleOffHour', document.getElementById('relayScheduleOffHour').value);");
+    client.println("  ");
+    client.println("  fetch('/quick-controls', {");
+    client.println("    method: 'POST',");
+    client.println("    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },");
+    client.println("    body: data");
+    client.println("  })");
+    client.println("  .then(response => response.text())");
+    client.println("  .then(data => {");
+    client.println("    status.innerHTML = '<span style=\"color: #3F9E3F;\">✅ Target values saved successfully!</span>';");
+    client.println("    setTimeout(() => { status.textContent = ''; }, 3000);");
+    client.println("  })");
+    client.println("  .catch(error => {");
+    client.println("    status.innerHTML = '<span style=\"color: #dc3545;\">❌ Error saving values. Please try again.</span>';");
+    client.println("  })");
+    client.println("  .finally(() => {");
+    client.println("    btn.disabled = false;");
+    client.println("    btn.textContent = 'Save Target Values';");
+    client.println("  });");
+    client.println("}");
+    client.println("</script>");
+
+    // System info section - moved to bottom
     client.println("<div class='info-section'>");
     client.println("<h3>System Information</h3>");
     client.println("<p><strong>Device Status:</strong> Online</p>");
@@ -1166,76 +1548,8 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
         client.println("<p><strong>Current Time:</strong> Time not available");
     }
     client.println("</p>");
-    client.println("</div>"); // Sensor data grid
-    client.println("<div class='sensor-grid'>");
+    client.println("</div>"); // End system info section
 
-    if (!readings.hasValidData)
-    {
-        client.println("<div class='sensor-card'>");
-        client.println("<div class='sensor-title'>No Data Available</div>");
-        client.println("<p>Sensor readings will appear here once data collection begins.</p>");
-        client.println("</div>");
-    }
-    else
-    {
-        // Temperature Card
-        client.println("<div class='sensor-card'>");
-        client.println("<div class='sensor-title'>🌡️ Temperature</div>");
-
-        client.print("<div class='sensor-value ");
-        client.print(getStatusColor(readings.temperatureStatus));
-        client.print("'>");
-        if (!isnan(readings.temperature))
-        {
-            client.print(readings.temperature, 1);
-            client.print("<span class='sensor-unit'>°C</span>");
-        }
-        else
-        {
-            client.print("--");
-        }
-        client.println("</div>");
-
-        client.print("<div class='sensor-timestamp'>Status: ");
-        client.print(getStatusText(readings.temperatureStatus));
-        client.println("</div>");
-
-        client.print("<div class='sensor-timestamp'>Last reading: ");
-        client.print(formatTimestamp(readings.temperatureTimestamp));
-        client.println("</div>");
-
-        client.println("</div>");
-
-        // Humidity Card
-        client.println("<div class='sensor-card'>");
-        client.println("<div class='sensor-title'>💧 Humidity</div>");
-
-        client.print("<div class='sensor-value ");
-        client.print(getStatusColor(readings.humidityStatus));
-        client.print("'>");
-        if (!isnan(readings.humidity))
-        {
-            client.print(readings.humidity, 1);
-            client.print("<span class='sensor-unit'>%</span>");
-        }
-        else
-        {
-            client.print("--");
-        }
-        client.println("</div>");
-
-        client.print("<div class='sensor-timestamp'>Status: ");
-        client.print(getStatusText(readings.humidityStatus));
-        client.println("</div>");
-
-        client.print("<div class='sensor-timestamp'>Last reading: ");
-        client.print(formatTimestamp(readings.humidityTimestamp));
-        client.println("</div>");
-
-        client.println("</div>");
-    }
-
-    client.println("</div>"); // End sensor-grid
     client.println("</div>"); // End container
     client.println("</body></html>");
 }
@@ -1266,7 +1580,12 @@ void NetworkConnections::sendSensorDataJSON(WiFiClient &client, const LatestRead
 
     if (readings.hasValidData)
     {
-        // Temperature sensor data
+        bool firstSensor = true;
+
+// Temperature sensor data
+#if TEMP_DISPLAY
+        if (!firstSensor)
+            client.println(",");
         client.println("    {");
         client.println("      \"id\": \"Temperature\",");
         client.println("      \"type\": [\"Temperature\"],");
@@ -1287,9 +1606,14 @@ void NetworkConnections::sendSensorDataJSON(WiFiClient &client, const LatestRead
         client.print("      \"timestamp\": ");
         client.print(readings.temperatureTimestamp);
         client.println("");
-        client.println("    },");
+        client.print("    }");
+        firstSensor = false;
+#endif
 
-        // Humidity sensor data
+// Humidity sensor data
+#if HUMIDITY_DISPLAY
+        if (!firstSensor)
+            client.println(",");
         client.println("    {");
         client.println("      \"id\": \"Humidity\",");
         client.println("      \"type\": [\"Humidity\"],");
@@ -1310,7 +1634,79 @@ void NetworkConnections::sendSensorDataJSON(WiFiClient &client, const LatestRead
         client.print("      \"timestamp\": ");
         client.print(readings.humidityTimestamp);
         client.println("");
-        client.println("    }");
+        client.print("    }");
+        firstSensor = false;
+#endif
+
+// TDS sensor data
+#if TDS_DISPLAY
+        if (!firstSensor)
+            client.println(",");
+        client.println("    {");
+        client.println("      \"id\": \"TDS\",");
+        client.println("      \"type\": [\"Total Dissolved Solids\"],");
+        client.print("      \"status\": ");
+        client.print(readings.tdsStatus);
+        client.println(",");
+        client.println("      \"units\": [\"ppm\"],");
+        client.print("      \"values\": [");
+        if (!isnan(readings.tds))
+        {
+            client.print(readings.tds, 0);
+        }
+        else
+        {
+            client.print("null");
+        }
+        client.println("],");
+        client.print("      \"timestamp\": ");
+        client.print(readings.tdsTimestamp);
+        client.println("");
+        client.print("    }");
+        firstSensor = false;
+#endif
+
+// Water Temperature sensor data
+#if WATER_TEMP_DISPLAY
+        if (!firstSensor)
+            client.println(",");
+        client.println("    {");
+        client.println("      \"id\": \"WaterTemperature\",");
+        client.println("      \"type\": [\"Water Temperature\"],");
+        client.print("      \"status\": ");
+        client.print(readings.waterTemperatureStatus);
+        client.println(",");
+        client.println("      \"units\": [\"°C\"],");
+        client.print("      \"values\": [");
+        if (!isnan(readings.waterTemperature))
+        {
+            client.print(readings.waterTemperature, 2);
+        }
+        else
+        {
+            client.print("null");
+        }
+        client.println("],");
+        client.print("      \"timestamp\": ");
+        client.print(readings.waterTemperatureTimestamp);
+        client.println("");
+        client.print("    }");
+        firstSensor = false;
+#endif
+
+        if (firstSensor)
+        {
+            // If no sensors are enabled, add empty placeholder
+            client.println("    {");
+            client.println("      \"id\": \"NoSensors\",");
+            client.println("      \"type\": [\"Information\"],");
+            client.println("      \"status\": 400,");
+            client.println("      \"units\": [\"N/A\"],");
+            client.println("      \"values\": [\"No sensors enabled\"],");
+            client.println("      \"timestamp\": 0");
+            client.println("    }");
+        }
+        client.println("");
     }
 
     client.println("  ]");
@@ -1423,7 +1819,7 @@ void NetworkConnections::sendHTMLHeader(WiFiClient &client, const char *title)
 void NetworkConnections::sendPageHeader(WiFiClient &client)
 {
     client.println("</head><body>");
-    client.println("<div class='header'><h1>Garden Guardian</h1></div>");
+    client.println("<div class='header'><h1>Garden Guardian Relay</h1></div>");
     client.println("<div class='container'>");
 }
 
@@ -1444,7 +1840,7 @@ void NetworkConnections::sendAdvancedConfigPage(WiFiClient &client, const Device
     client.println("<style>");
     client.println("label { font-size: 14px; font-weight: bold; display: block; margin-top: 15px; text-align: left; }");
     client.println("input[type='number'], input[type='text'] { width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }");
-    client.println("input:focus { border-color: #208dbf; outline: none; }");
+    client.println("input:focus { border-color: #3F9E3F; outline: none; }");
     client.println(".form-group { margin-bottom: 15px; }");
     client.println(".form-row { display: flex; gap: 10px; }");
     client.println(".form-row .form-group { flex: 1; }");
@@ -1532,12 +1928,76 @@ void NetworkConnections::sendAdvancedConfigPage(WiFiClient &client, const Device
     client.println("</div>");
     client.println("</div>");
 
+    // Target Values section
+    client.println("<h3 style='margin-top: 30px; color: #3F9E3F;'>Target Values</h3>");
+    client.println("<div class='form-row'>");
+#if TDS_DISPLAY
+    client.println("<div class='form-group'>");
+    client.println("<label for='targetTDS'>Target TDS (ppm):</label>");
+    client.print("<input type='number' id='targetTDS' name='targetTDS' value='");
+    client.print(settings.targetTDS, 0);
+    client.println("' min='100' max='2000' step='10' required>");
+    client.println("<div class='help-text'>Target Total Dissolved Solids value</div>");
+    client.println("</div>");
+#endif
+
+#if TEMP_DISPLAY
+    client.println("<div class='form-group'>");
+    client.println("<label for='targetAirTemp'>Target Air Temperature (°C):</label>");
+    client.print("<input type='number' id='targetAirTemp' name='targetAirTemp' value='");
+    client.print(settings.targetAirTemp, 1);
+    client.println("' min='10' max='40' step='0.5' required>");
+    client.println("<div class='help-text'>Target ambient air temperature</div>");
+    client.println("</div>");
+#endif
+    client.println("</div>");
+
+#if WATER_TEMP_DISPLAY
+    client.println("<div class='form-row'>");
+    client.println("<div class='form-group'>");
+    client.println("<label for='targetNFTResTemp'>Target NFT Reservoir Temperature (°C):</label>");
+    client.print("<input type='number' id='targetNFTResTemp' name='targetNFTResTemp' value='");
+    client.print(settings.targetNFTResTemp, 1);
+    client.println("' min='10' max='30' step='0.5' required>");
+    client.println("<div class='help-text'>Target NFT reservoir water temperature</div>");
+    client.println("</div>");
+
+    client.println("<div class='form-group'>");
+    client.println("<label for='targetDWCResTemp'>Target DWC Reservoir Temperature (°C):</label>");
+    client.print("<input type='number' id='targetDWCResTemp' name='targetDWCResTemp' value='");
+    client.print(settings.targetDWCResTemp, 1);
+    client.println("' min='10' max='30' step='0.5' required>");
+    client.println("<div class='help-text'>Target DWC reservoir water temperature</div>");
+    client.println("</div>");
+    client.println("</div>");
+#endif
+
+    // Relay Schedule section
+    client.println("<h3 style='margin-top: 30px; color: #3F9E3F;'>Relay Schedule</h3>");
+    client.println("<div class='form-row'>");
+    client.println("<div class='form-group'>");
+    client.println("<label for='relayScheduleOnHour'>Relay ON Hour (0-23):</label>");
+    client.print("<input type='number' id='relayScheduleOnHour' name='relayScheduleOnHour' value='");
+    client.print(settings.relayScheduleOnHour);
+    client.println("' min='0' max='23' step='1' required>");
+    client.println("<div class='help-text'>Hour of day the relay turns ON (24-hour format)</div>");
+    client.println("</div>");
+
+    client.println("<div class='form-group'>");
+    client.println("<label for='relayScheduleOffHour'>Relay OFF Hour (0-23):</label>");
+    client.print("<input type='number' id='relayScheduleOffHour' name='relayScheduleOffHour' value='");
+    client.print(settings.relayScheduleOffHour);
+    client.println("' min='0' max='23' step='1' required>");
+    client.println("<div class='help-text'>Hour of day the relay turns OFF (24-hour format, must be after ON hour)</div>");
+    client.println("</div>");
+    client.println("</div>");
+
     client.println("<button type='submit' id='submitButton'>Save Settings & Restart</button>");
     client.println("</form>");
 
     // Navigation back
     client.println("<div style='margin-top: 20px; text-align: center;'>");
-    client.println("<a href='/' style='text-decoration: none; color: #208dbf;'>← Back to Dashboard</a>");
+    client.println("<a href='/' style='text-decoration: none; color: #3F9E3F;'>🏠 Back to Dashboard</a>");
     client.println("</div>");
 
     sendPageFooter(client);
@@ -1545,20 +2005,20 @@ void NetworkConnections::sendAdvancedConfigPage(WiFiClient &client, const Device
 
 void NetworkConnections::processAdvancedConfig(WiFiClient &client, String request)
 {
-    SysLogs::logInfo("NETWORK", "Received Advanced Configuration Request:");
-    SysLogs::println(request);
+    Serial.println("Received Advanced Configuration Request:");
+    Serial.println(request);
 
     // Extract the POST body
     int bodyIndex = request.indexOf("\r\n\r\n");
     if (bodyIndex == -1)
     {
-        SysLogs::logInfo("NETWORK", "Error: Could not locate POST body.");
+        Serial.println("Error: Could not locate POST body.");
         return;
     }
     request = request.substring(bodyIndex + 4);
 
-    SysLogs::logInfo("NETWORK", "Extracted POST Body:");
-    SysLogs::println(request);
+    Serial.println("Extracted POST Body:");
+    Serial.println(request);
 
     DeviceSettings newSettings;
 
@@ -1616,31 +2076,118 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
     {
         idCodeStart += 7; // Move past "idCode="
         String idCodeStr = request.substring(idCodeStart);
+        idCodeStr = idCodeStr.substring(0, idCodeStr.indexOf("&") != -1 ? idCodeStr.indexOf("&") : idCodeStr.length());
         newSettings.idCode = urlDecode(idCodeStr);
         newSettings.idCode.replace("+", " ");
     }
 
-    SysLogs::logInfo("NETWORK", "Parsed Settings:");
-    SysLogs::print("Sleep Duration: ");
-    SysLogs::print(String(newSettings.sleepDuration / 1000000ULL));
-    SysLogs::logInfo("NETWORK", " seconds");
-    SysLogs::print("Sensor Interval: ");
-    SysLogs::print(String(newSettings.sensorReadInterval / 1000));
-    SysLogs::logInfo("NETWORK", " seconds");
-    SysLogs::print("Stabilization Time: ");
-    SysLogs::print(String(newSettings.sensorStabilizationTime / 1000));
-    SysLogs::logInfo("NETWORK", " seconds");
-    SysLogs::print("Device ID: ");
-    SysLogs::println(newSettings.deviceID);
-    SysLogs::print("ID Code: ");
-    SysLogs::println(newSettings.idCode);
+    // Parse target values
+    int targetTDSStart = request.indexOf("targetTDS=");
+    if (targetTDSStart != -1)
+    {
+        targetTDSStart += 10; // Move past "targetTDS="
+        String targetTDSStr = request.substring(targetTDSStart);
+        targetTDSStr = targetTDSStr.substring(0, targetTDSStr.indexOf("&") != -1 ? targetTDSStr.indexOf("&") : targetTDSStr.length());
+        newSettings.targetTDS = targetTDSStr.toFloat();
+    }
+
+    int targetAirTempStart = request.indexOf("targetAirTemp=");
+    if (targetAirTempStart != -1)
+    {
+        targetAirTempStart += 14; // Move past "targetAirTemp="
+        String targetAirTempStr = request.substring(targetAirTempStart);
+        targetAirTempStr = targetAirTempStr.substring(0, targetAirTempStr.indexOf("&") != -1 ? targetAirTempStr.indexOf("&") : targetAirTempStr.length());
+        newSettings.targetAirTemp = targetAirTempStr.toFloat();
+    }
+
+    int targetNFTResTempStart = request.indexOf("targetNFTResTemp=");
+    if (targetNFTResTempStart != -1)
+    {
+        targetNFTResTempStart += 17; // Move past "targetNFTResTemp="
+        String targetNFTResTempStr = request.substring(targetNFTResTempStart);
+        targetNFTResTempStr = targetNFTResTempStr.substring(0, targetNFTResTempStr.indexOf("&") != -1 ? targetNFTResTempStr.indexOf("&") : targetNFTResTempStr.length());
+        newSettings.targetNFTResTemp = targetNFTResTempStr.toFloat();
+    }
+
+    int targetDWCResTempStart = request.indexOf("targetDWCResTemp=");
+    if (targetDWCResTempStart != -1)
+    {
+        targetDWCResTempStart += 17; // Move past "targetDWCResTemp="
+        String targetDWCResTempStr = request.substring(targetDWCResTempStart);
+        newSettings.targetDWCResTemp = targetDWCResTempStr.toFloat();
+    }
+
+    // Parse relay schedule hours
+    int relayOnStart = request.indexOf("relayScheduleOnHour=");
+    if (relayOnStart != -1)
+    {
+        relayOnStart += 20; // Move past "relayScheduleOnHour="
+        int relayOnEnd = request.indexOf("&", relayOnStart);
+        if (relayOnEnd == -1)
+            relayOnEnd = request.length();
+        String relayOnStr = urlDecode(request.substring(relayOnStart, relayOnEnd));
+        newSettings.relayScheduleOnHour = (unsigned long)relayOnStr.toInt();
+    }
+
+    int relayOffStart = request.indexOf("relayScheduleOffHour=");
+    if (relayOffStart != -1)
+    {
+        relayOffStart += 21; // Move past "relayScheduleOffHour="
+        int relayOffEnd = request.indexOf("&", relayOffStart);
+        if (relayOffEnd == -1)
+            relayOffEnd = request.length();
+        String relayOffStr = urlDecode(request.substring(relayOffStart, relayOffEnd));
+        newSettings.relayScheduleOffHour = (unsigned long)relayOffStr.toInt();
+    }
+
+    Serial.println("Parsed Settings:");
+    Serial.print("Sleep Duration: ");
+    Serial.print(newSettings.sleepDuration / 1000000ULL);
+    Serial.println(" seconds");
+    Serial.print("Sensor Interval: ");
+    Serial.print(newSettings.sensorReadInterval / 1000);
+    Serial.println(" seconds");
+    Serial.print("Stabilization Time: ");
+    Serial.print(newSettings.sensorStabilizationTime / 1000);
+    Serial.println(" seconds");
+    Serial.print("Device ID: ");
+    Serial.println(newSettings.deviceID);
+    Serial.print("ID Code: ");
+    Serial.println(newSettings.idCode);
+    Serial.print("Target TDS: ");
+    Serial.print(newSettings.targetTDS);
+    Serial.println(" ppm");
+    Serial.print("Target Air Temp: ");
+    Serial.print(newSettings.targetAirTemp);
+    Serial.println("°C");
+    Serial.print("Target NFT Res Temp: ");
+    Serial.print(newSettings.targetNFTResTemp);
+    Serial.println("°C");
+    Serial.print("Target DWC Res Temp: ");
+    Serial.print(newSettings.targetDWCResTemp);
+    Serial.println("°C");
+    Serial.printf("Relay Schedule - ON: %lu:00, OFF: %lu:00\n",
+                  newSettings.relayScheduleOnHour, newSettings.relayScheduleOffHour);
 
     // Validate settings
     bool isValid = (newSettings.sleepDuration >= 5000000ULL && newSettings.sleepDuration <= 3600000000ULL) &&
                    (newSettings.sensorReadInterval >= 1000 && newSettings.sensorReadInterval <= 3600000) &&
                    (newSettings.sensorStabilizationTime <= 600000) &&
                    (newSettings.deviceID.length() > 0 && newSettings.deviceID.length() <= 20) &&
-                   (newSettings.idCode.length() > 0 && newSettings.idCode.length() <= 16);
+                   (newSettings.idCode.length() > 0 && newSettings.idCode.length() <= 16) &&
+#if TDS_DISPLAY
+                   (newSettings.targetTDS >= 100 && newSettings.targetTDS <= 2000) &&
+#endif
+#if TEMP_DISPLAY
+                   (newSettings.targetAirTemp >= 10 && newSettings.targetAirTemp <= 40) &&
+#endif
+#if WATER_TEMP_DISPLAY
+                   (newSettings.targetNFTResTemp >= 10 && newSettings.targetNFTResTemp <= 30) &&
+                   (newSettings.targetDWCResTemp >= 10 && newSettings.targetDWCResTemp <= 30) &&
+#endif
+                   (newSettings.relayScheduleOnHour <= 23) &&
+                   (newSettings.relayScheduleOffHour <= 23) &&
+                   (newSettings.relayScheduleOnHour < newSettings.relayScheduleOffHour);
 
     if (isValid)
     {
@@ -1701,7 +2248,7 @@ bool NetworkConnections::retryNTPSync()
     // Check if we're connected to WiFi
     if (WiFi.status() != WL_CONNECTED)
     {
-        SysLogs::logInfo("NETWORK", "Cannot retry NTP sync - not connected to WiFi");
+        Serial.println("Cannot retry NTP sync - not connected to WiFi");
         return false;
     }
 
@@ -1711,11 +2258,11 @@ bool NetworkConnections::retryNTPSync()
     {
         // If RTC is already current (e.g., sync was recent), don't retry immediately
         // This prevents excessive NTP requests
-        SysLogs::logInfo("NETWORK", "RTC time appears current, skipping NTP retry");
+        Serial.println("RTC time appears current, skipping NTP retry");
         return true; // Consider this success since we have valid time
     }
 
-    SysLogs::logInfo("NETWORK", "Attempting periodic NTP synchronization retry...");
+    Serial.println("Attempting periodic NTP synchronization retry...");
 
     // Use a simpler, faster approach for retry attempts
     const char *quickServer = "pool.ntp.org";
@@ -1726,34 +2273,35 @@ bool NetworkConnections::retryNTPSync()
     unsigned long startTime = millis();
     struct tm timeinfo;
 
-    SysLogs::print("Quick NTP sync");
+    Serial.print("Quick NTP sync");
     while ((millis() - startTime < QUICK_TIMEOUT))
     {
         if (getLocalTime(&timeinfo))
         {
-            SysLogs::println();
-            SysLogs::logInfo("NETWORK", "Periodic NTP sync successful!");
+            Serial.println();
+            Serial.println("Periodic NTP sync successful!");
             return true;
         }
-        SysLogs::print(".");
+        Serial.print(".");
         delay(500);
         esp_task_wdt_reset();
     }
 
-    SysLogs::println();
-    SysLogs::logInfo("NETWORK", "Periodic NTP sync failed - will try again later");
+    Serial.println();
+    Serial.println("Periodic NTP sync failed - will try again later");
     return false;
 }
 
 //------------------------------------------------------------------------------
 // HTTP Publishing Functions
+// @ Note: HTTP functions should be moved to their own class (e.g., HTTPClientManager) for better separation of concerns.
 //------------------------------------------------------------------------------
 
 bool NetworkConnections::testServerConnection(const String &device_id)
 {
     if (WiFi.status() != WL_CONNECTED)
     {
-        SysLogs::logInfo("NETWORK", "[HTTP] Cannot test server connection - not connected to WiFi");
+        Serial.println("[HTTP] Cannot test server connection - not connected to WiFi");
         return false;
     }
 
@@ -1764,8 +2312,8 @@ bool NetworkConnections::testServerConnection(const String &device_id)
     String queryString = "?deviceID=" + device_id;
     String url = "http://" + String(server.address) + ":" + String(server.port) + server.test + queryString;
 
-    SysLogs::logInfo("HTTP", "Testing server connection to: " + url);
-    SysLogs::logInfo("HTTP", "Device ID for test: " + device_id);
+    Serial.printf("[HTTP] Testing server connection to: %s\n", url.c_str());
+    Serial.printf("[HTTP] Device ID for test: %s\n", device_id.c_str());
 
     http.begin(url);
     http.setTimeout(10000); // 10 second timeout
@@ -1774,15 +2322,15 @@ bool NetworkConnections::testServerConnection(const String &device_id)
 
     if (httpResponseCode > 0)
     {
-        SysLogs::logInfo("NETWORK", "[HTTP] Server ping successful: " + String(httpResponseCode) + "");
+        Serial.printf("[HTTP] Server ping successful: %d\n", httpResponseCode);
         String response = http.getString();
-        SysLogs::logDebug("HTTP", "Server response: " + response);
+        Serial.printf("[HTTP] Server response: %s\n", response.c_str());
         http.end();
         return httpResponseCode == 200;
     }
     else
     {
-        SysLogs::logInfo("NETWORK", "[HTTP] Server ping failed with error: " + String(httpResponseCode) + "");
+        Serial.printf("[HTTP] Server ping failed with error: %d\n", httpResponseCode);
         http.end();
         return false;
     }
@@ -1792,7 +2340,7 @@ bool NetworkConnections::sendSensorDataHTTP(const sensorData &data, const String
 {
     if (WiFi.status() != WL_CONNECTED)
     {
-        SysLogs::logInfo("NETWORK", "[HTTP] Cannot send data - not connected to WiFi");
+        Serial.println("[HTTP] Cannot send data - not connected to WiFi");
         return false;
     }
 
@@ -1801,7 +2349,7 @@ bool NetworkConnections::sendSensorDataHTTP(const sensorData &data, const String
 
     String url = "http://" + String(server.address) + ":" + String(server.port) + server.apiPostRoute;
 
-    SysLogs::logInfo("HTTP", "Sending sensor data to: " + url);
+    Serial.printf("[HTTP] Sending sensor data to: %s\n", url.c_str());
 
     // Create JSON payload using ArduinoJson v7 syntax
     JsonDocument doc;
@@ -1822,7 +2370,7 @@ bool NetworkConnections::sendSensorDataHTTP(const sensorData &data, const String
     String jsonString;
     serializeJson(doc, jsonString);
 
-    SysLogs::logDebug("HTTP", "JSON payload: " + jsonString);
+    Serial.printf("[HTTP] JSON payload: %s\n", jsonString.c_str());
 
     // Configure HTTP request
     http.begin(url);
@@ -1836,15 +2384,15 @@ bool NetworkConnections::sendSensorDataHTTP(const sensorData &data, const String
     if (httpResponseCode > 0)
     {
         String response = http.getString();
-        SysLogs::logInfo("NETWORK", "[HTTP] Response code: " + String(httpResponseCode) + "");
-        SysLogs::logDebug("HTTP", "Response: " + response);
+        Serial.printf("[HTTP] Response code: %d\n", httpResponseCode);
+        Serial.printf("[HTTP] Response: %s\n", response.c_str());
 
         http.end();
         return httpResponseCode >= 200 && httpResponseCode < 300; // Accept 2xx responses
     }
     else
     {
-        SysLogs::logInfo("NETWORK", "[HTTP] Request failed with error: " + String(httpResponseCode) + "");
+        Serial.printf("[HTTP] Request failed with error: %d\n", httpResponseCode);
         http.end();
         return false;
     }
@@ -1854,16 +2402,16 @@ bool NetworkConnections::publishSensorData(const SensorDataManager &dataManager,
 {
     if (WiFi.status() != WL_CONNECTED)
     {
-        SysLogs::logInfo("NETWORK", "[HTTP] Cannot publish data - not connected to WiFi");
+        Serial.println("[HTTP] Cannot publish data - not connected to WiFi");
         return false;
     }
 
-    SysLogs::logInfo("NETWORK", "[HTTP] Starting sensor data publication...");
+    Serial.println("[HTTP] Starting sensor data publication...");
 
     // Test server connection first
     if (!testServerConnection(deviceID))
     {
-        SysLogs::logInfo("NETWORK", "[HTTP] Server connection test failed - aborting publication");
+        Serial.println("[HTTP] Server connection test failed - aborting publication");
         return false;
     }
     // Get all sensor data
@@ -1871,11 +2419,11 @@ bool NetworkConnections::publishSensorData(const SensorDataManager &dataManager,
 
     if (allData.empty())
     {
-        SysLogs::logInfo("NETWORK", "[HTTP] No sensor data to publish");
+        Serial.println("[HTTP] No sensor data to publish");
         return true; // Not an error, just nothing to send
     }
 
-    SysLogs::logInfo("HTTP", "Publishing " + String(allData.size()) + " sensor data items...");
+    Serial.printf("[HTTP] Publishing %d sensor data items...\n", allData.size());
 
     int successCount = 0;
     int totalCount = allData.size();
@@ -1883,16 +2431,16 @@ bool NetworkConnections::publishSensorData(const SensorDataManager &dataManager,
     // Send each sensor data item separately
     for (const auto &data : allData)
     {
-        SysLogs::logDebug("HTTP", "Sending data for sensor: " + data.sensorID);
+        Serial.printf("[HTTP] Sending data for sensor: %s\n", data.sensorID.c_str());
 
         if (sendSensorDataHTTP(data, deviceID))
         {
             successCount++;
-            SysLogs::logSuccess("HTTP", "Successfully sent data for sensor: " + data.sensorID);
+            Serial.printf("[HTTP] Successfully sent data for sensor: %s\n", data.sensorID.c_str());
         }
         else
         {
-            SysLogs::logError("Failed to send data for sensor: " + data.sensorID);
+            Serial.printf("[HTTP] Failed to send data for sensor: %s\n", data.sensorID.c_str());
         }
 
         // Small delay between requests to avoid overwhelming the server
@@ -1902,8 +2450,228 @@ bool NetworkConnections::publishSensorData(const SensorDataManager &dataManager,
         esp_task_wdt_reset();
     }
 
-    SysLogs::logInfo("NETWORK", "[HTTP] Publication complete: " + String(successCount) + "/" + String(totalCount) + " successful");
+    Serial.printf("[HTTP] Publication complete: %d/%d successful\n", successCount, totalCount);
 
     // Return true if at least some data was sent successfully
     return successCount > 0;
+}
+
+void NetworkConnections::processQuickControls(WiFiClient &client, String request)
+{
+    Serial.println("Received Quick Controls Request:");
+    Serial.println(request);
+
+    // Extract the POST body
+    int bodyIndex = request.indexOf("\r\n\r\n");
+    if (bodyIndex == -1)
+    {
+        Serial.println("Error: Could not locate POST body.");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+    request = request.substring(bodyIndex + 4);
+
+    Serial.println("Extracted POST Body:");
+    Serial.println(request);
+
+    // Parse target values from form data
+    float targetTDS = 500.0;
+    float targetAirTemp = 25.0;
+    float targetNFTResTemp = 18.0;
+    float targetDWCResTemp = 18.0;
+    int relayOnHour = (int)state.relayScheduleOnHour;
+    int relayOffHour = (int)state.RelayScheduleOffHour;
+
+    // Parse targetTDS
+    int tdsStart = request.indexOf("targetTDS=");
+    if (tdsStart != -1)
+    {
+        tdsStart += 10; // Move past "targetTDS="
+        int tdsEnd = request.indexOf("&", tdsStart);
+        if (tdsEnd == -1)
+            tdsEnd = request.length();
+        String tdsStr = request.substring(tdsStart, tdsEnd);
+        tdsStr = urlDecode(tdsStr);
+        targetTDS = tdsStr.toFloat();
+        Serial.printf("Found targetTDS: '%s' -> %.1f\n", tdsStr.c_str(), targetTDS);
+    }
+    else
+    {
+        Serial.println("targetTDS not found in request");
+    }
+
+    // Parse targetAirTemp
+    int airTempStart = request.indexOf("targetAirTemp=");
+    if (airTempStart != -1)
+    {
+        airTempStart += 14; // Move past "targetAirTemp="
+        int airTempEnd = request.indexOf("&", airTempStart);
+        if (airTempEnd == -1)
+            airTempEnd = request.length();
+        String airTempStr = request.substring(airTempStart, airTempEnd);
+        airTempStr = urlDecode(airTempStr);
+        targetAirTemp = airTempStr.toFloat();
+        Serial.printf("Found targetAirTemp: '%s' -> %.1f\n", airTempStr.c_str(), targetAirTemp);
+    }
+    else
+    {
+        Serial.println("targetAirTemp not found in request");
+    }
+
+    // Parse targetNFTResTemp
+    int nftTempStart = request.indexOf("targetNFTResTemp=");
+    if (nftTempStart != -1)
+    {
+        nftTempStart += 17; // Move past "targetNFTResTemp="
+        int nftTempEnd = request.indexOf("&", nftTempStart);
+        if (nftTempEnd == -1)
+            nftTempEnd = request.length();
+        String nftTempStr = request.substring(nftTempStart, nftTempEnd);
+        targetNFTResTemp = nftTempStr.toFloat();
+    }
+
+    // Parse targetDWCResTemp
+    int dwcTempStart = request.indexOf("targetDWCResTemp=");
+    if (dwcTempStart != -1)
+    {
+        dwcTempStart += 17; // Move past "targetDWCResTemp="
+        int dwcTempEnd = request.indexOf("&", dwcTempStart);
+        if (dwcTempEnd == -1)
+            dwcTempEnd = request.length();
+        String dwcTempStr = request.substring(dwcTempStart, dwcTempEnd);
+        targetDWCResTemp = dwcTempStr.toFloat();
+    }
+
+    // Parse relayScheduleOnHour
+    int relayOnStart = request.indexOf("relayScheduleOnHour=");
+    if (relayOnStart != -1)
+    {
+        relayOnStart += 20; // Move past "relayScheduleOnHour="
+        int relayOnEnd = request.indexOf("&", relayOnStart);
+        if (relayOnEnd == -1)
+            relayOnEnd = request.length();
+        String relayOnStr = request.substring(relayOnStart, relayOnEnd);
+        relayOnStr = urlDecode(relayOnStr);
+        relayOnHour = relayOnStr.toInt();
+        Serial.printf("Found relayScheduleOnHour: '%s' -> %d\n", relayOnStr.c_str(), relayOnHour);
+    }
+    else
+    {
+        Serial.println("relayScheduleOnHour not found in request - keeping current value");
+    }
+
+    // Parse RelayScheduleOffHour
+    int relayOffStart = request.indexOf("relayScheduleOffHour=");
+    if (relayOffStart != -1)
+    {
+        relayOffStart += 21; // Move past "relayScheduleOffHour="
+        int relayOffEnd = request.indexOf("&", relayOffStart);
+        if (relayOffEnd == -1)
+            relayOffEnd = request.length();
+        String relayOffStr = request.substring(relayOffStart, relayOffEnd);
+        relayOffStr = urlDecode(relayOffStr);
+        relayOffHour = relayOffStr.toInt();
+        Serial.printf("Found relayScheduleOffHour: '%s' -> %d\n", relayOffStr.c_str(), relayOffHour);
+    }
+    else
+    {
+        Serial.println("relayScheduleOffHour not found in request - keeping current value");
+    }
+
+    // Debug: Show parsed values
+    Serial.printf("Parsed values - TDS: %.1f, Air: %.1f, NFT: %.1f, DWC: %.1f\n",
+                  targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
+    Serial.printf("Parsed relay schedule - ON: %d:00, OFF: %d:00\n", relayOnHour, relayOffHour);
+
+    // Validate ranges
+    if (targetTDS < 100 || targetTDS > 2000)
+    {
+        Serial.println("Error: Invalid TDS value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (targetAirTemp < 10 || targetAirTemp > 40)
+    {
+        Serial.println("Error: Invalid Air Temperature value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (targetNFTResTemp < 10 || targetNFTResTemp > 30)
+    {
+        Serial.println("Error: Invalid NFT Reservoir Temperature value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (targetDWCResTemp < 10 || targetDWCResTemp > 30)
+    {
+        Serial.println("Error: Invalid DWC Reservoir Temperature value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (relayOnHour < 0 || relayOnHour > 23)
+    {
+        Serial.println("Error: Invalid Relay ON Hour value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (relayOffHour < 0 || relayOffHour > 23)
+    {
+        Serial.println("Error: Invalid Relay OFF Hour value");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    if (relayOnHour >= relayOffHour)
+    {
+        Serial.println("Error: Relay ON Hour must be less than Relay OFF Hour");
+        client.println("HTTP/1.1 400 Bad Request");
+        client.println("Connection: close");
+        client.println();
+        return;
+    }
+
+    // Save target values to NVS
+    saveTargetValues(targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
+
+    // Update global state values
+    state.Target_TDS = targetTDS;
+    state.Target_Air_Temp = targetAirTemp;
+    state.Target_NFT_Res_Temp = targetNFTResTemp;
+    state.Target_DWC_Res_Temp = targetDWCResTemp;
+    state.relayScheduleOnHour = (unsigned long)relayOnHour;
+    state.RelayScheduleOffHour = (unsigned long)relayOffHour;
+
+    // Save relay schedule hours to NVS
+    saveRelaySchedule((unsigned long)relayOnHour, (unsigned long)relayOffHour);
+
+    // Send success response
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain");
+    client.println("Connection: close");
+    client.println();
+    client.println("Target values saved successfully");
+
+    Serial.println("Quick controls processed successfully");
+    Serial.printf("New values - TDS: %.1f ppm, Air: %.1f°C, NFT: %.1f°C, DWC: %.1f°C\n",
+                  targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
+    Serial.printf("New relay schedule - ON: %d:00, OFF: %d:00\n", relayOnHour, relayOffHour);
 }

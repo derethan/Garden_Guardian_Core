@@ -38,18 +38,7 @@ struct DeviceSettings
     unsigned long ntpRetryInterval = 3600000;      // 1 hour between NTP retry attempts (milliseconds)
     bool httpPublishEnabled = true;                // Enable HTTP data publishing
     unsigned long httpPublishInterval = 300000;    // 5 minutes between HTTP publications (milliseconds)
-
-    // Target Values - Configurable and stored in NVS
-    float targetTDS = 500.0;       // Target TDS value in ppm
-    float targetAirTemp = 25.0;    // Target air temperature in °C
-    float targetNFTResTemp = 18.0; // Target NFT reservoir temperature in °C
-    float targetDWCResTemp = 18.0; // Target DWC reservoir temperature in °C
-
-    // Relay Schedule - Configurable and stored in NVS
-    unsigned long relayScheduleOnHour = 0;   // Hour of day to turn relay ON (0-23)
-    unsigned long relayScheduleOffHour = 18; // Hour of day to turn relay OFF (0-23)
-
-    bool valid = false; // Indicates if settings were loaded successfully
+    bool valid = false;                            // Indicates if settings were loaded successfully
 };
 
 extern int wifiStatus;
@@ -74,48 +63,57 @@ private:
     void scanNetworks();
     void printNetworkInfo();
 
-    bool hasNVSSettingChanged(const char *file, String keyName, uint32_t &newValue);
-    bool hasBoolNVSSettingChanged(const char *file, String keyName, bool newValue);
-
     void sendHTTPHeader(WiFiClient &client, int statusCode = 200);
     void sendHTMLHeader(WiFiClient &client, const char *title);
     void sendPageHeader(WiFiClient &client);
     void sendPageFooter(WiFiClient &client); // Sensor data web server methods
-    void sendSensorDataPage(WiFiClient &client, const LatestReadings &readings, const DeviceSettings &settings);
+    void sendSensorDataPage(WiFiClient &client, const LatestReadings &readings);
     void sendSensorDataJSON(WiFiClient &client, const LatestReadings &readings);
     void sendAdvancedConfigPage(WiFiClient &client, const DeviceSettings &settings);
     void processAdvancedConfig(WiFiClient &client, String request);
-    void processQuickControls(WiFiClient &client, String request);
+
+    // Helper functions for NVS key checking with different data types
+    uint64_t checkNVSKeyULong64(const char *keyName, uint64_t defaultValue, const char *settingName);
+    unsigned long checkNVSKeyULong(const char *keyName, unsigned long defaultValue, const char *settingName);
+    String checkNVSKeyString(const char *keyName, const String &defaultValue, const char *settingName);
+    bool checkNVSKeyBool(const char *keyName, bool defaultValue, const char *settingName);
+    bool hasNVSSettingChanged(const char *file, String keyName, uint32_t &newValue);
+    bool hasBoolNVSSettingChanged(const char *file, String keyName, bool newValue);
+
     String formatTimestamp(unsigned long timestamp);
     String getStatusText(int status);
     String getStatusColor(int status);
 
 public:
-    WiFiCredentials loadWiFiCredentials();                                                                       // New function
-    DeviceSettings loadDeviceSettings();                                                                         // New function for loading device settings
-    void saveTargetValues(float targetTDS, float targetAirTemp, float targetNFTResTemp, float targetDWCResTemp); // New function for saving target values
-    void saveRelaySchedule(unsigned long onHour, unsigned long offHour);                                         // Save relay schedule hours to NVS
-    void saveDeviceSettings(const DeviceSettings &settings);                                                     // Save device settings to NVS
-    void saveWiFiCredentials(String ssid, String password);
+    WiFiCredentials loadWiFiCredentials(); // New function
+    DeviceSettings loadDeviceSettings();   // New function for loading device settings
+    void saveDeviceSettings(const DeviceSettings &settings); // Save device settings to NVS
 
+    // WiFi and network methods
     void setupWiFi(WiFiCredentials credentials, String idCode, bool apON); // Modified to accept credentials
     bool connectToNetwork(String ssid, String password);
-    void startWebServer();                       // New function to start web server in station mode
     bool reconnectToNetwork(int maxRetries = 3); // New reconnection method with retries
     void disconnectWiFi();                       // New method to properly disconnect WiFi before sleep
     void saveNetworkConfig(IPAddress ip, IPAddress gateway, IPAddress subnet, IPAddress dns1, IPAddress dns2);
     bool loadNetworkConfig(IPAddress &ip, IPAddress &gateway, IPAddress &subnet, IPAddress &dns1, IPAddress &dns2);
+    void startWebServer(); // New function to start web server in station mode
 
+    // AP and Web Server methods
     void setupAP(String idCode);
     void handleClientRequests();
     void handleClientRequestsWithSensorData(const LatestReadings &readings); // Updated method for sensor data
     void sendWiFiConfigPage(WiFiClient &client);
+
+    // Configuration processing methods
     void processWiFiConfig(WiFiClient &client, String request);
+    void saveWiFiCredentials(String ssid, String password);
+
+    // Helpers for mode and time
     bool isAPMode();
     static unsigned long getTime();
-    static unsigned long getRTCTime();                         // Add this new method declaration
-    static bool retryNTPSync();                                // New function for periodic NTP retry attempts
-    String getCurrentTimeString(const char *timezone = "UTC"); // Returns current time as HH:MM:SS format in specified timezone
+    static unsigned long getRTCTime(); // Add this new method declaration
+    static bool retryNTPSync();        // New function for periodic NTP retry attempts
+    String getCurrentTimeString(const char* timezone = "UTC");     // Returns current time as HH:MM:SS format in specified timezone
 
     // HTTP Publishing functions
     bool publishSensorData(const SensorDataManager &sensorData, const String &deviceID);

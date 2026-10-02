@@ -64,6 +64,8 @@ struct SystemState
   float Target_NFT_Res_Temp = 18;
   float Current_Air_Temp = 0;
   float Target_Air_Temp = 25;
+  float Current_TDS = 0;
+  float Target_TDS = 500;
 
   // Serial Mode tracking
   SystemMode previousMode = SystemMode::INITIALIZING; // Track mode before entering SERIAL_MODE

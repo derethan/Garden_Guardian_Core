@@ -26,6 +26,8 @@ void LocalDeviceSettingsApplier::applySettings(const DeviceSettings &settings)
     state.idCode = settings.idCode;
     state.httpPublishEnabled = settings.httpPublishEnabled;
     state.httpPublishInterval = settings.httpPublishInterval;
+    state.relayScheduleOnHour  = settings.relayScheduleOnHour;
+    state.RelayScheduleOffHour = settings.relayScheduleOffHour;
 }
 
 /**
