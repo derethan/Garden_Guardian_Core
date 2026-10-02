@@ -868,9 +868,18 @@ void NetworkConnections::saveDeviceSettings(const DeviceSettings &settings)
     preferences.putFloat("targetNFTTemp", settings.targetNFTResTemp);
     preferences.putFloat("targetDWCTemp", settings.targetDWCResTemp);
 
-    // Save relay schedule hours
-    preferences.putULong("relayOnHour", settings.relayScheduleOnHour);
-    preferences.putULong("relayOffHour", settings.relayScheduleOffHour);
+    // Save relay control configuration
+    for (int i = 0; i < RELAY_COUNT; i++)
+    {
+        const RelayConfig &c = settings.relayConfig[i];
+        String p = "r" + String(i + 1);
+        preferences.putUChar((p + "Mode").c_str(), (uint8_t)c.mode);
+        preferences.putUChar((p + "Src").c_str(), (uint8_t)c.tempSource);
+        preferences.putUChar((p + "On").c_str(), c.onHour);
+        preferences.putUChar((p + "Off").c_str(), c.offHour);
+        preferences.putUShort((p + "OnMin").c_str(), c.onMinutes);
+        preferences.putUShort((p + "OffMin").c_str(), c.offMinutes);
+    }
 
     preferences.end();
     Serial.println("Device settings successfully saved to NVS.");
@@ -913,8 +922,26 @@ DeviceSettings NetworkConnections::loadDeviceSettings()
     else
         settings.targetDWCResTemp = 18.0;
 
-    settings.relayScheduleOnHour = preferences.getULong("relayOnHour", 0);
-    settings.relayScheduleOffHour = preferences.getULong("relayOffHour", 18);
+    // Load relay control configuration (legacy relay-1 schedule keys used as fallback)
+    for (int i = 0; i < RELAY_COUNT; i++)
+    {
+        RelayConfig c = defaultRelayConfig(i);
+        if (i == 0)
+        {
+            c.onHour = (uint8_t)preferences.getULong("relayOnHour", c.onHour);
+            c.offHour = (uint8_t)preferences.getULong("relayOffHour", c.offHour);
+        }
+        String p = "r" + String(i + 1);
+        uint8_t mode = preferences.getUChar((p + "Mode").c_str(), (uint8_t)c.mode);
+        uint8_t src = preferences.getUChar((p + "Src").c_str(), (uint8_t)c.tempSource);
+        c.mode = mode <= (uint8_t)RelayMode::TIMED ? (RelayMode)mode : c.mode;
+        c.tempSource = src <= (uint8_t)TempSource::NFT ? (TempSource)src : c.tempSource;
+        c.onHour = preferences.getUChar((p + "On").c_str(), c.onHour);
+        c.offHour = preferences.getUChar((p + "Off").c_str(), c.offHour);
+        c.onMinutes = preferences.getUShort((p + "OnMin").c_str(), c.onMinutes);
+        c.offMinutes = preferences.getUShort((p + "OffMin").c_str(), c.offMinutes);
+        settings.relayConfig[i] = c;
+    }
 
     preferences.end();
 
@@ -981,14 +1008,99 @@ void NetworkConnections::saveTargetValues(float targetTDS, float targetAirTemp, 
                   targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
 }
 
-void NetworkConnections::saveRelaySchedule(unsigned long onHour, unsigned long offHour)
+void NetworkConnections::saveRelayConfig(int index, const RelayConfig &c)
 {
-    Serial.println("Saving relay schedule to NVS...");
+    if (index < 0 || index >= RELAY_COUNT)
+        return;
     preferences.begin("device", false);
-    preferences.putULong("relayOnHour", onHour);
-    preferences.putULong("relayOffHour", offHour);
+    String p = "r" + String(index + 1);
+    preferences.putUChar((p + "Mode").c_str(), (uint8_t)c.mode);
+    preferences.putUChar((p + "Src").c_str(), (uint8_t)c.tempSource);
+    preferences.putUChar((p + "On").c_str(), c.onHour);
+    preferences.putUChar((p + "Off").c_str(), c.offHour);
+    preferences.putUShort((p + "OnMin").c_str(), c.onMinutes);
+    preferences.putUShort((p + "OffMin").c_str(), c.offMinutes);
     preferences.end();
-    Serial.printf("Relay schedule saved - ON: %lu:00, OFF: %lu:00\n", onHour, offHour);
+    Serial.printf("Relay %d config saved - mode %d, src %d, %d-%d h, %d/%d min\n", index + 1,
+                  (int)c.mode, (int)c.tempSource, c.onHour, c.offHour, c.onMinutes, c.offMinutes);
+}
+
+String NetworkConnections::getFormValue(const String &body, const String &key, const String &defaultValue)
+{
+    String needle = key + "=";
+    int start = 0;
+    while (true)
+    {
+        int idx = body.indexOf(needle, start);
+        if (idx == -1)
+            return defaultValue;
+        if (idx == 0 || body[idx - 1] == '&')
+        {
+            idx += needle.length();
+            int end = body.indexOf('&', idx);
+            if (end == -1)
+                end = body.length();
+            return urlDecode(body.substring(idx, end));
+        }
+        start = idx + 1;
+    }
+}
+
+void NetworkConnections::processRelayConfig(WiFiClient &client, String request)
+{
+    int bodyIndex = request.indexOf("\r\n\r\n");
+    String body = bodyIndex == -1 ? "" : request.substring(bodyIndex + 4);
+
+    RelayConfig updated[RELAY_COUNT];
+    for (int i = 0; i < RELAY_COUNT; i++)
+    {
+        RelayConfig c = state.relayConfig[i];
+        String p = "r" + String(i + 1);
+        int mode = getFormValue(body, p + "Mode", String((int)c.mode)).toInt();
+        int src = getFormValue(body, p + "Src", String((int)c.tempSource)).toInt();
+        int on = getFormValue(body, p + "On", String(c.onHour)).toInt();
+        int off = getFormValue(body, p + "Off", String(c.offHour)).toInt();
+        int onMin = getFormValue(body, p + "OnMin", String(c.onMinutes)).toInt();
+        int offMin = getFormValue(body, p + "OffMin", String(c.offMinutes)).toInt();
+
+        bool ok = mode >= 0 && mode <= (int)RelayMode::TIMED &&
+                  src >= 0 && src <= (int)TempSource::NFT &&
+                  on >= 0 && on <= 23 && off >= 0 && off <= 23 &&
+                  onMin >= 1 && onMin <= 1440 && offMin >= 1 && offMin <= 1440;
+        if (ok && mode == (int)RelayMode::SCHEDULE && on >= off)
+            ok = false;
+        if (!ok)
+        {
+            Serial.printf("Invalid relay %d configuration\n", i + 1);
+            client.println("HTTP/1.1 400 Bad Request");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            client.println("Invalid configuration for relay " + String(i + 1));
+            return;
+        }
+        c.mode = (RelayMode)mode;
+        c.tempSource = (TempSource)src;
+        c.onHour = on;
+        c.offHour = off;
+        c.onMinutes = onMin;
+        c.offMinutes = offMin;
+        updated[i] = c;
+    }
+
+    for (int i = 0; i < RELAY_COUNT; i++)
+    {
+        state.relayConfig[i] = updated[i];
+        saveRelayConfig(i, updated[i]);
+    }
+    state.lastRelayRead = 0; // Apply new modes on the next loop iteration
+    state.relayConfigChanged = true;
+
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain");
+    client.println("Connection: close");
+    client.println();
+    client.println("Relay configuration saved");
 }
 
 //------------------------------------------------------------------------------
@@ -1180,6 +1292,10 @@ void NetworkConnections::handleClientRequestsWithSensorData(const LatestReadings
         {
             // Process advanced configuration
             processAdvancedConfig(client, request);
+        }
+        else if (request.indexOf("POST /relay-config") >= 0)
+        {
+            processRelayConfig(client, request);
         }
         else if (request.indexOf("POST /quick-controls") >= 0)
         {
@@ -1451,20 +1567,6 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
     client.println("</div>");
 #endif
 
-    client.println("<div>");
-    client.println("<label for='relayScheduleOnHour' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Relay Schedule ON Hour (0-23):</label>");
-    client.print("<input type='number' id='relayScheduleOnHour' name='relayScheduleOnHour' value='");
-    client.print(settings.relayScheduleOnHour);
-    client.println("' min='0' max='23' step='1' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
-    client.println("</div>");
-
-    client.println("<div>");
-    client.println("<label for='relayScheduleOffHour' style='font-size: 14px; font-weight: bold; display: block; margin-bottom: 5px;'>Relay Schedule OFF Hour (0-23):</label>");
-    client.print("<input type='number' id='relayScheduleOffHour' name='relayScheduleOffHour' value='");
-    client.print(settings.relayScheduleOffHour);
-    client.println("' min='0' max='23' step='1' style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px;'>");
-    client.println("</div>");
-
     client.println("</form>");
 
     client.println("<div style='text-align: center; margin-top: 15px;'>");
@@ -1494,8 +1596,6 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
     client.println("  data.append('targetNFTResTemp', document.getElementById('targetNFTResTemp').value);");
     client.println("  data.append('targetDWCResTemp', document.getElementById('targetDWCResTemp').value);");
 #endif
-    client.println("  data.append('relayScheduleOnHour', document.getElementById('relayScheduleOnHour').value);");
-    client.println("  data.append('relayScheduleOffHour', document.getElementById('relayScheduleOffHour').value);");
     client.println("  ");
     client.println("  fetch('/quick-controls', {");
     client.println("    method: 'POST',");
@@ -1514,6 +1614,78 @@ void NetworkConnections::sendSensorDataPage(WiFiClient &client, const LatestRead
     client.println("    btn.disabled = false;");
     client.println("    btn.textContent = 'Save Target Values';");
     client.println("  });");
+    client.println("}");
+    client.println("</script>");
+
+    // Relay control assignment section
+    client.println("<div class='info-section'>");
+    client.println("<h3>🔌 Relay Control</h3>");
+    client.println("<p>Choose how each relay is controlled.</p>");
+    client.println("<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 15px;'>");
+    for (int i = 0; i < RELAY_COUNT; i++)
+    {
+        const RelayConfig &rc = settings.relayConfig[i];
+        String n = String(i + 1);
+        String st = "style='width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px; margin-bottom: 8px;'";
+        client.println("<div style='border: 1px solid #ddd; border-radius: 8px; padding: 12px;'>");
+        client.println("<strong>Relay " + n + "</strong>");
+        client.println("<select id='r" + n + "Mode' onchange='updateRelayFields(" + n + ")' " + st + ">");
+        client.println("<option value='0'" + String(rc.mode == RelayMode::SCHEDULE ? " selected" : "") + ">Schedule</option>");
+        client.println("<option value='1'" + String(rc.mode == RelayMode::TEMPERATURE ? " selected" : "") + ">Temperature</option>");
+        client.println("<option value='2'" + String(rc.mode == RelayMode::TIMED ? " selected" : "") + ">Timed Interval</option>");
+        client.println("</select>");
+
+        client.println("<div id='r" + n + "Sched'>");
+        client.println("<label>ON Hour (0-23)</label><input type='number' id='r" + n + "On' min='0' max='23' value='" + String(rc.onHour) + "' " + st + ">");
+        client.println("<label>OFF Hour (0-23)</label><input type='number' id='r" + n + "Off' min='0' max='23' value='" + String(rc.offHour) + "' " + st + ">");
+        client.println("</div>");
+
+        client.println("<div id='r" + n + "Temp'>");
+        client.println("<label>Temperature Source</label><select id='r" + n + "Src' " + st + ">");
+        client.println("<option value='0'" + String(rc.tempSource == TempSource::AIR ? " selected" : "") + ">Air</option>");
+        client.println("<option value='1'" + String(rc.tempSource == TempSource::DWC ? " selected" : "") + ">DWC Reservoir</option>");
+        client.println("<option value='2'" + String(rc.tempSource == TempSource::NFT ? " selected" : "") + ">NFT Reservoir</option>");
+        client.println("</select></div>");
+
+        client.println("<div id='r" + n + "Timed'>");
+        client.println("<label>ON Minutes</label><input type='number' id='r" + n + "OnMin' min='1' max='1440' value='" + String(rc.onMinutes) + "' " + st + ">");
+        client.println("<label>OFF Minutes</label><input type='number' id='r" + n + "OffMin' min='1' max='1440' value='" + String(rc.offMinutes) + "' " + st + ">");
+        client.println("</div>");
+        client.println("</div>");
+    }
+    client.println("</div>");
+    client.println("<div style='text-align: center; margin-top: 15px;'>");
+    client.println("<button id='saveRelaysBtn' onclick='saveRelayConfig()' style='background: #3F9E3F; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px;'>Save Relay Control</button>");
+    client.println("<div id='relayStatus' style='margin-top: 10px; font-weight: bold;'></div>");
+    client.println("</div>");
+    client.println("</div>");
+
+    client.println("<script>");
+    client.println("function updateRelayFields(n) {");
+    client.println("  const m = document.getElementById('r' + n + 'Mode').value;");
+    client.println("  document.getElementById('r' + n + 'Sched').style.display = m === '0' ? 'block' : 'none';");
+    client.println("  document.getElementById('r' + n + 'Temp').style.display = m === '1' ? 'block' : 'none';");
+    client.println("  document.getElementById('r' + n + 'Timed').style.display = m === '2' ? 'block' : 'none';");
+    client.println("}");
+    client.println("for (let i = 1; i <= 4; i++) updateRelayFields(i);");
+    client.println("function saveRelayConfig() {");
+    client.println("  const btn = document.getElementById('saveRelaysBtn');");
+    client.println("  const status = document.getElementById('relayStatus');");
+    client.println("  btn.disabled = true;");
+    client.println("  const data = new URLSearchParams();");
+    client.println("  for (let i = 1; i <= 4; i++) {");
+    client.println("    for (const f of ['Mode', 'Src', 'On', 'Off', 'OnMin', 'OffMin']) {");
+    client.println("      data.append('r' + i + f, document.getElementById('r' + i + f).value);");
+    client.println("    }");
+    client.println("  }");
+    client.println("  fetch('/relay-config', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: data })");
+    client.println("  .then(r => r.text().then(t => ({ ok: r.ok, t: t })))");
+    client.println("  .then(res => {");
+    client.println("    status.innerHTML = res.ok ? '<span style=\"color: #3F9E3F;\">✅ Relay control saved!</span>' : '<span style=\"color: #dc3545;\">❌ ' + res.t + '</span>';");
+    client.println("    setTimeout(() => { status.textContent = ''; }, 4000);");
+    client.println("  })");
+    client.println("  .catch(() => { status.innerHTML = '<span style=\"color: #dc3545;\">❌ Error saving. Please try again.</span>'; })");
+    client.println("  .finally(() => { btn.disabled = false; });");
     client.println("}");
     client.println("</script>");
 
@@ -1972,26 +2144,6 @@ void NetworkConnections::sendAdvancedConfigPage(WiFiClient &client, const Device
     client.println("</div>");
 #endif
 
-    // Relay Schedule section
-    client.println("<h3 style='margin-top: 30px; color: #3F9E3F;'>Relay Schedule</h3>");
-    client.println("<div class='form-row'>");
-    client.println("<div class='form-group'>");
-    client.println("<label for='relayScheduleOnHour'>Relay ON Hour (0-23):</label>");
-    client.print("<input type='number' id='relayScheduleOnHour' name='relayScheduleOnHour' value='");
-    client.print(settings.relayScheduleOnHour);
-    client.println("' min='0' max='23' step='1' required>");
-    client.println("<div class='help-text'>Hour of day the relay turns ON (24-hour format)</div>");
-    client.println("</div>");
-
-    client.println("<div class='form-group'>");
-    client.println("<label for='relayScheduleOffHour'>Relay OFF Hour (0-23):</label>");
-    client.print("<input type='number' id='relayScheduleOffHour' name='relayScheduleOffHour' value='");
-    client.print(settings.relayScheduleOffHour);
-    client.println("' min='0' max='23' step='1' required>");
-    client.println("<div class='help-text'>Hour of day the relay turns OFF (24-hour format, must be after ON hour)</div>");
-    client.println("</div>");
-    client.println("</div>");
-
     client.println("<button type='submit' id='submitButton'>Save Settings & Restart</button>");
     client.println("</form>");
 
@@ -2021,6 +2173,8 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
     Serial.println(request);
 
     DeviceSettings newSettings;
+    for (int i = 0; i < RELAY_COUNT; i++)
+        newSettings.relayConfig[i] = state.relayConfig[i];
 
     // Parse sleep duration
     int sleepStart = request.indexOf("sleepDuration=");
@@ -2117,29 +2271,6 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
         newSettings.targetDWCResTemp = targetDWCResTempStr.toFloat();
     }
 
-    // Parse relay schedule hours
-    int relayOnStart = request.indexOf("relayScheduleOnHour=");
-    if (relayOnStart != -1)
-    {
-        relayOnStart += 20; // Move past "relayScheduleOnHour="
-        int relayOnEnd = request.indexOf("&", relayOnStart);
-        if (relayOnEnd == -1)
-            relayOnEnd = request.length();
-        String relayOnStr = urlDecode(request.substring(relayOnStart, relayOnEnd));
-        newSettings.relayScheduleOnHour = (unsigned long)relayOnStr.toInt();
-    }
-
-    int relayOffStart = request.indexOf("relayScheduleOffHour=");
-    if (relayOffStart != -1)
-    {
-        relayOffStart += 21; // Move past "relayScheduleOffHour="
-        int relayOffEnd = request.indexOf("&", relayOffStart);
-        if (relayOffEnd == -1)
-            relayOffEnd = request.length();
-        String relayOffStr = urlDecode(request.substring(relayOffStart, relayOffEnd));
-        newSettings.relayScheduleOffHour = (unsigned long)relayOffStr.toInt();
-    }
-
     Serial.println("Parsed Settings:");
     Serial.print("Sleep Duration: ");
     Serial.print(newSettings.sleepDuration / 1000000ULL);
@@ -2166,8 +2297,6 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
     Serial.print("Target DWC Res Temp: ");
     Serial.print(newSettings.targetDWCResTemp);
     Serial.println("°C");
-    Serial.printf("Relay Schedule - ON: %lu:00, OFF: %lu:00\n",
-                  newSettings.relayScheduleOnHour, newSettings.relayScheduleOffHour);
 
     // Validate settings
     bool isValid = (newSettings.sleepDuration >= 5000000ULL && newSettings.sleepDuration <= 3600000000ULL) &&
@@ -2185,9 +2314,7 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
                    (newSettings.targetNFTResTemp >= 10 && newSettings.targetNFTResTemp <= 30) &&
                    (newSettings.targetDWCResTemp >= 10 && newSettings.targetDWCResTemp <= 30) &&
 #endif
-                   (newSettings.relayScheduleOnHour <= 23) &&
-                   (newSettings.relayScheduleOffHour <= 23) &&
-                   (newSettings.relayScheduleOnHour < newSettings.relayScheduleOffHour);
+                   true;
 
     if (isValid)
     {
@@ -2481,8 +2608,6 @@ void NetworkConnections::processQuickControls(WiFiClient &client, String request
     float targetAirTemp = 25.0;
     float targetNFTResTemp = 18.0;
     float targetDWCResTemp = 18.0;
-    int relayOnHour = (int)state.relayScheduleOnHour;
-    int relayOffHour = (int)state.RelayScheduleOffHour;
 
     // Parse targetTDS
     int tdsStart = request.indexOf("targetTDS=");
@@ -2544,46 +2669,9 @@ void NetworkConnections::processQuickControls(WiFiClient &client, String request
         targetDWCResTemp = dwcTempStr.toFloat();
     }
 
-    // Parse relayScheduleOnHour
-    int relayOnStart = request.indexOf("relayScheduleOnHour=");
-    if (relayOnStart != -1)
-    {
-        relayOnStart += 20; // Move past "relayScheduleOnHour="
-        int relayOnEnd = request.indexOf("&", relayOnStart);
-        if (relayOnEnd == -1)
-            relayOnEnd = request.length();
-        String relayOnStr = request.substring(relayOnStart, relayOnEnd);
-        relayOnStr = urlDecode(relayOnStr);
-        relayOnHour = relayOnStr.toInt();
-        Serial.printf("Found relayScheduleOnHour: '%s' -> %d\n", relayOnStr.c_str(), relayOnHour);
-    }
-    else
-    {
-        Serial.println("relayScheduleOnHour not found in request - keeping current value");
-    }
-
-    // Parse RelayScheduleOffHour
-    int relayOffStart = request.indexOf("relayScheduleOffHour=");
-    if (relayOffStart != -1)
-    {
-        relayOffStart += 21; // Move past "relayScheduleOffHour="
-        int relayOffEnd = request.indexOf("&", relayOffStart);
-        if (relayOffEnd == -1)
-            relayOffEnd = request.length();
-        String relayOffStr = request.substring(relayOffStart, relayOffEnd);
-        relayOffStr = urlDecode(relayOffStr);
-        relayOffHour = relayOffStr.toInt();
-        Serial.printf("Found relayScheduleOffHour: '%s' -> %d\n", relayOffStr.c_str(), relayOffHour);
-    }
-    else
-    {
-        Serial.println("relayScheduleOffHour not found in request - keeping current value");
-    }
-
     // Debug: Show parsed values
     Serial.printf("Parsed values - TDS: %.1f, Air: %.1f, NFT: %.1f, DWC: %.1f\n",
                   targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
-    Serial.printf("Parsed relay schedule - ON: %d:00, OFF: %d:00\n", relayOnHour, relayOffHour);
 
     // Validate ranges
     if (targetTDS < 100 || targetTDS > 2000)
@@ -2622,33 +2710,6 @@ void NetworkConnections::processQuickControls(WiFiClient &client, String request
         return;
     }
 
-    if (relayOnHour < 0 || relayOnHour > 23)
-    {
-        Serial.println("Error: Invalid Relay ON Hour value");
-        client.println("HTTP/1.1 400 Bad Request");
-        client.println("Connection: close");
-        client.println();
-        return;
-    }
-
-    if (relayOffHour < 0 || relayOffHour > 23)
-    {
-        Serial.println("Error: Invalid Relay OFF Hour value");
-        client.println("HTTP/1.1 400 Bad Request");
-        client.println("Connection: close");
-        client.println();
-        return;
-    }
-
-    if (relayOnHour >= relayOffHour)
-    {
-        Serial.println("Error: Relay ON Hour must be less than Relay OFF Hour");
-        client.println("HTTP/1.1 400 Bad Request");
-        client.println("Connection: close");
-        client.println();
-        return;
-    }
-
     // Save target values to NVS
     saveTargetValues(targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
 
@@ -2657,11 +2718,6 @@ void NetworkConnections::processQuickControls(WiFiClient &client, String request
     state.Target_Air_Temp = targetAirTemp;
     state.Target_NFT_Res_Temp = targetNFTResTemp;
     state.Target_DWC_Res_Temp = targetDWCResTemp;
-    state.relayScheduleOnHour = (unsigned long)relayOnHour;
-    state.RelayScheduleOffHour = (unsigned long)relayOffHour;
-
-    // Save relay schedule hours to NVS
-    saveRelaySchedule((unsigned long)relayOnHour, (unsigned long)relayOffHour);
 
     // Send success response
     client.println("HTTP/1.1 200 OK");
@@ -2673,5 +2729,4 @@ void NetworkConnections::processQuickControls(WiFiClient &client, String request
     Serial.println("Quick controls processed successfully");
     Serial.printf("New values - TDS: %.1f ppm, Air: %.1f°C, NFT: %.1f°C, DWC: %.1f°C\n",
                   targetTDS, targetAirTemp, targetNFTResTemp, targetDWCResTemp);
-    Serial.printf("New relay schedule - ON: %d:00, OFF: %d:00\n", relayOnHour, relayOffHour);
 }

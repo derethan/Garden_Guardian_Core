@@ -555,10 +555,42 @@ void loop()
       // Use local timezone (Newfoundland) when scheduling relays
       const char *tz = getTimezoneString("Canada Newfoundland Time");
 
-      relay1.setRelayForSchedule(state.relayScheduleOnHour, state.RelayScheduleOffHour, network.getCurrentTimeString(tz));
-      relay2.setRelayforTemp(state.Current_Air_Temp, state.Target_Air_Temp); // Current/Target
-      relay3.setRelayforTemp(state.DWC_Res_Temp, state.Target_DWC_Res_Temp); // Current/Target
-      relay4.setRelayforTemp(state.NFT_Res_Temp, state.Target_NFT_Res_Temp); // Current/Target
+      RelayControl *relays[RELAY_COUNT] = {&relay1, &relay2, &relay3, &relay4};
+      String timeStr = network.getCurrentTimeString(tz);
+
+      for (int i = 0; i < RELAY_COUNT; i++)
+      {
+        const RelayConfig &cfg = state.relayConfig[i];
+        if (state.relayConfigChanged)
+          relays[i]->resetTimer();
+
+        switch (cfg.mode)
+        {
+        case RelayMode::SCHEDULE:
+          relays[i]->setRelayForSchedule(cfg.onHour, cfg.offHour, timeStr);
+          break;
+        case RelayMode::TEMPERATURE:
+        {
+          float current = state.Current_Air_Temp, target = state.Target_Air_Temp;
+          if (cfg.tempSource == TempSource::DWC)
+          {
+            current = state.DWC_Res_Temp;
+            target = state.Target_DWC_Res_Temp;
+          }
+          else if (cfg.tempSource == TempSource::NFT)
+          {
+            current = state.NFT_Res_Temp;
+            target = state.Target_NFT_Res_Temp;
+          }
+          relays[i]->setRelayforTemp(current, target);
+          break;
+        }
+        case RelayMode::TIMED:
+          relays[i]->setRelayForTimedIntervals(cfg.onMinutes, cfg.offMinutes);
+          break;
+        }
+      }
+      state.relayConfigChanged = false;
 
       state.lastRelayRead = currentMillis;
     }

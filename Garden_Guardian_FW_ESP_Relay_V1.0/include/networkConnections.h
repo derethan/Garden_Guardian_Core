@@ -20,6 +20,8 @@
 // Include latest readings structure
 #include "latestReadings.h"
 
+#include "relayConfig.h"
+
 struct WiFiCredentials
 {
     String ssid;
@@ -45,9 +47,8 @@ struct DeviceSettings
     float targetNFTResTemp = 18.0; // Target NFT reservoir temperature in °C
     float targetDWCResTemp = 18.0; // Target DWC reservoir temperature in °C
 
-    // Relay Schedule - Configurable and stored in NVS
-    unsigned long relayScheduleOnHour = 0;   // Hour of day to turn relay ON (0-23)
-    unsigned long relayScheduleOffHour = 18; // Hour of day to turn relay OFF (0-23)
+    // Per-relay control configuration - stored in NVS
+    RelayConfig relayConfig[RELAY_COUNT] = {defaultRelayConfig(0), defaultRelayConfig(1), defaultRelayConfig(2), defaultRelayConfig(3)};
 
     bool valid = false; // Indicates if settings were loaded successfully
 };
@@ -86,6 +87,8 @@ private:
     void sendAdvancedConfigPage(WiFiClient &client, const DeviceSettings &settings);
     void processAdvancedConfig(WiFiClient &client, String request);
     void processQuickControls(WiFiClient &client, String request);
+    void processRelayConfig(WiFiClient &client, String request);
+    String getFormValue(const String &body, const String &key, const String &defaultValue);
     String formatTimestamp(unsigned long timestamp);
     String getStatusText(int status);
     String getStatusColor(int status);
@@ -94,7 +97,7 @@ public:
     WiFiCredentials loadWiFiCredentials();                                                                       // New function
     DeviceSettings loadDeviceSettings();                                                                         // New function for loading device settings
     void saveTargetValues(float targetTDS, float targetAirTemp, float targetNFTResTemp, float targetDWCResTemp); // New function for saving target values
-    void saveRelaySchedule(unsigned long onHour, unsigned long offHour);                                         // Save relay schedule hours to NVS
+    void saveRelayConfig(int index, const RelayConfig &cfg);                                                     // Save one relay's control config to NVS
     void saveDeviceSettings(const DeviceSettings &settings);                                                     // Save device settings to NVS
     void saveWiFiCredentials(String ssid, String password);
 

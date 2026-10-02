@@ -1,6 +1,7 @@
 #pragma once
 #include "Config.h"
 #include <Arduino.h>
+#include "relayConfig.h"
 
 enum class SystemMode
 {
@@ -54,9 +55,9 @@ struct SystemState
   bool apAlwaysOn = false;
 
   unsigned long relayReadInterval = 60000; // 60 seconds
+  bool relayConfigChanged = false; // Set by web UI so main loop resets relay timers
   unsigned long lastRelayRead = 0;
-  unsigned long relayScheduleOnHour = 0;
-  unsigned long RelayScheduleOffHour = 18;
+  RelayConfig relayConfig[RELAY_COUNT] = {defaultRelayConfig(0), defaultRelayConfig(1), defaultRelayConfig(2), defaultRelayConfig(3)};
 
   float DWC_Res_Temp = 0;
   float Target_DWC_Res_Temp = 18;
