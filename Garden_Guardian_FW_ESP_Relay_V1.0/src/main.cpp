@@ -610,7 +610,7 @@ void loop()
       {
 
         // First handle HTTP Publishing
-        // publishDataWithHTTP();
+        publishDataWithHTTP();
 
         // handle Publishing via MQTT as well
         publishDataWithMQTT();
