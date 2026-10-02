@@ -40,6 +40,7 @@ struct DeviceSettings
     unsigned long ntpRetryInterval = 3600000;      // 1 hour between NTP retry attempts (milliseconds)
     bool httpPublishEnabled = true;                // Enable HTTP data publishing
     unsigned long httpPublishInterval = 300000;    // 5 minutes between HTTP publications (milliseconds)
+    bool sleepEnabled = false;                     // Enable light sleep between scheduled events
 
     // Target Values - Configurable and stored in NVS
     float targetTDS = 500.0;       // Target TDS value in ppm

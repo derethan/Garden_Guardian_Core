@@ -26,6 +26,7 @@ void LocalDeviceSettingsApplier::applySettings(const DeviceSettings &settings)
     state.idCode = settings.idCode;
     state.httpPublishEnabled = settings.httpPublishEnabled;
     state.httpPublishInterval = settings.httpPublishInterval;
+    state.sleepEnabled = settings.sleepEnabled;
     for (int i = 0; i < RELAY_COUNT; i++)
         state.relayConfig[i] = settings.relayConfig[i];
 }

@@ -852,7 +852,9 @@ void NetworkConnections::saveWiFiCredentials(String ssid, String password)
 void NetworkConnections::saveDeviceSettings(const DeviceSettings &settings)
 {
     Serial.println("Saving device settings to NVS...");
-    preferences.begin("device", false); // Read-write mode    preferences.putULong64("sleepDuration", settings.sleepDuration);
+    preferences.begin("device", false); // Read-write mode
+    preferences.putULong64("sleepDuration", settings.sleepDuration);
+    preferences.putBool("sleepEnabled", settings.sleepEnabled);
     preferences.putULong("sensorInterval", settings.sensorReadInterval);
     preferences.putULong("stabilizationTime", settings.sensorStabilizationTime);
     preferences.putString("deviceID", settings.deviceID);
@@ -891,7 +893,9 @@ DeviceSettings NetworkConnections::loadDeviceSettings()
     settings.valid = false; // Default to invalid
 
     Serial.println("Loading device settings from NVS storage...");
-    preferences.begin("device", true); // Read-only mode    settings.sleepDuration = preferences.getULong64("sleepDuration", 15ULL * 1000000ULL);
+    preferences.begin("device", true); // Read-only mode
+    settings.sleepDuration = preferences.getULong64("sleepDuration", 15ULL * 1000000ULL);
+    settings.sleepEnabled = preferences.getBool("sleepEnabled", false);
     settings.sensorReadInterval = preferences.getULong("sensorInterval", 30000);
     settings.sensorStabilizationTime = preferences.getULong("stabilizationTime", 60000);
     settings.deviceID = preferences.getString("deviceID", DEVICE_ID);
@@ -2031,7 +2035,8 @@ void NetworkConnections::sendAdvancedConfigPage(WiFiClient &client, const Device
     client.println("  var idCode = document.getElementById('idCode').value.trim();");
     client.println("  var submitButton = document.getElementById('submitButton');");
     client.println("  ");
-    client.println("  var isValid = sleepDuration > 0 && sensorInterval > 0 && stabilizationTime > 0 && deviceID !== '' && idCode !== '';");
+    client.println("  var publishInterval = document.getElementById('publishInterval').value;");
+    client.println("  var isValid = sleepDuration > 0 && sensorInterval > 0 && publishInterval > 0 && stabilizationTime > 0 && deviceID !== '' && idCode !== '';");
     client.println("  submitButton.disabled = !isValid;");
     client.println("}");
     client.println("document.addEventListener('DOMContentLoaded', function() {");
@@ -2070,6 +2075,30 @@ void NetworkConnections::sendAdvancedConfigPage(WiFiClient &client, const Device
     client.print(settings.sensorReadInterval / 1000);
     client.println("' min='1' max='3600' required>");
     client.println("<div class='help-text'>Time between sensor readings (1-3600 seconds)</div>");
+    client.println("</div>");
+
+    // Publishing
+    client.println("<div class='form-group'>");
+    client.print("<label><input type='checkbox' id='httpPublishEnabled' name='httpPublishEnabled' value='1' style='width:auto;margin-right:8px;'");
+    client.print(settings.httpPublishEnabled ? " checked" : "");
+    client.println(">Enable Data Publishing</label>");
+    client.println("<div class='help-text'>Publish buffered sensor data via HTTP and MQTT</div>");
+    client.println("</div>");
+
+    client.println("<div class='form-group'>");
+    client.println("<label for='publishInterval'>Publish Interval (seconds):</label>");
+    client.print("<input type='number' id='publishInterval' name='publishInterval' value='");
+    client.print(settings.httpPublishInterval / 1000);
+    client.println("' min='1' max='86400' required>");
+    client.println("<div class='help-text'>Time between data publications (1-86400 seconds)</div>");
+    client.println("</div>");
+
+    // Sleep
+    client.println("<div class='form-group'>");
+    client.print("<label><input type='checkbox' id='sleepEnabled' name='sleepEnabled' value='1' style='width:auto;margin-right:8px;'");
+    client.print(settings.sleepEnabled ? " checked" : "");
+    client.println(">Enable Sleep Mode</label>");
+    client.println("<div class='help-text'>Device sleeps between scheduled readings/publishes (disables the web interface while asleep)</div>");
     client.println("</div>");
 
     // Sensor Stabilization Time
@@ -2200,6 +2229,21 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
         newSettings.sensorReadInterval = intervalStr.toInt() * 1000; // Convert to milliseconds
     }
 
+    // Parse publish interval
+    int publishIntervalStart = request.indexOf("publishInterval=");
+    if (publishIntervalStart != -1)
+    {
+        publishIntervalStart += 16; // Move past "publishInterval="
+        int publishIntervalEnd = request.indexOf("&", publishIntervalStart);
+        if (publishIntervalEnd == -1)
+            publishIntervalEnd = request.length();
+        newSettings.httpPublishInterval = request.substring(publishIntervalStart, publishIntervalEnd).toInt() * 1000UL;
+    }
+
+    // Unchecked checkboxes are absent from the POST body
+    newSettings.httpPublishEnabled = request.indexOf("httpPublishEnabled=") != -1;
+    newSettings.sleepEnabled = request.indexOf("sleepEnabled=") != -1;
+
     // Parse stabilization time
     int stabilizationStart = request.indexOf("stabilizationTime=");
     if (stabilizationStart != -1)
@@ -2301,6 +2345,7 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
     // Validate settings
     bool isValid = (newSettings.sleepDuration >= 5000000ULL && newSettings.sleepDuration <= 3600000000ULL) &&
                    (newSettings.sensorReadInterval >= 1000 && newSettings.sensorReadInterval <= 3600000) &&
+                   (newSettings.httpPublishInterval >= 1000 && newSettings.httpPublishInterval <= 86400000UL) &&
                    (newSettings.sensorStabilizationTime <= 600000) &&
                    (newSettings.deviceID.length() > 0 && newSettings.deviceID.length() <= 20) &&
                    (newSettings.idCode.length() > 0 && newSettings.idCode.length() <= 16) &&
@@ -2360,6 +2405,7 @@ void NetworkConnections::processAdvancedConfig(WiFiClient &client, String reques
         client.println("<ul style='text-align: left; max-width: 300px; margin: 0 auto;'>");
         client.println("<li>Sleep Duration: 5-3600 seconds</li>");
         client.println("<li>Sensor Interval: 1-3600 seconds</li>");
+        client.println("<li>Publish Interval: 1-86400 seconds</li>");
         client.println("<li>Stabilization Time: 0-600 seconds</li>");
         client.println("<li>Device ID: 1-20 characters</li>");
         client.println("<li>ID Code: 1-16 characters</li>");
