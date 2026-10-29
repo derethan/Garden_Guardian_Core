@@ -100,7 +100,7 @@ public:
     void saveTargetValues(float targetTDS, float targetAirTemp, float targetNFTResTemp, float targetDWCResTemp); // New function for saving target values
     void saveRelayConfig(int index, const RelayConfig &cfg);                                                     // Save one relay's control config to NVS
     void saveDeviceSettings(const DeviceSettings &settings);                                                     // Save device settings to NVS
-    void saveWiFiCredentials(String ssid, String password);
+    bool saveWiFiCredentials(String ssid, String password);
 
     void setupWiFi(WiFiCredentials credentials, String idCode, bool apON); // Modified to accept credentials
     bool connectToNetwork(String ssid, String password);

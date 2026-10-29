@@ -595,10 +595,15 @@ void NetworkConnections::scanNetworks()
         {
             esp_task_wdt_reset(); // Feed the watchdog in the loop
 
+            String escaped = WiFi.SSID(i);
+            escaped.replace("&", "&amp;");
+            escaped.replace("'", "&#39;");
+            escaped.replace("<", "&lt;");
+            escaped.replace(">", "&gt;");
             availableNetworks += "<option value='";
-            availableNetworks += WiFi.SSID(i);
+            availableNetworks += escaped;
             availableNetworks += "'>";
-            availableNetworks += WiFi.SSID(i);
+            availableNetworks += escaped;
             availableNetworks += "</option>";
 
             Serial.print(i + 1);
@@ -711,8 +716,7 @@ void NetworkConnections::sendWiFiConfigPage(WiFiClient &client)
 
 void NetworkConnections::processWiFiConfig(WiFiClient &client, String request)
 {
-    Serial.println("Received Wi-Fi Configuration Request:");
-    Serial.println(request); // Log the full request
+    Serial.println("Received Wi-Fi Configuration Request");
 
     // **Step 1: Extract the POST body correctly**
     int bodyIndex = request.indexOf("\r\n\r\n"); // Find where headers end
@@ -726,67 +730,21 @@ void NetworkConnections::processWiFiConfig(WiFiClient &client, String request)
     Serial.println("Extracted POST Body:");
     Serial.println(request); // Should now show 'ssid=MySSID&password=MyPass'
 
-    String ssid = "";
-    String password = "";
-
-    // **Step 2: Parse the 'ssid' parameter**
-    int ssidStart = request.indexOf("ssid=");
-    if (ssidStart != -1)
-    {
-        ssidStart += 5; // Move past "ssid="
-        int ssidEnd = request.indexOf("&", ssidStart);
-        if (ssidEnd == -1)
-        {
-            ssid = request.substring(ssidStart);
-        }
-        else
-        {
-            ssid = request.substring(ssidStart, ssidEnd);
-        }
-        ssid.replace("+", " "); // Replace '+' with spaces
-        ssid = urlDecode(ssid);
-    }
-
-    // **Check for manualSSID if ssid is empty**
+    // A manually entered SSID takes priority over the dropdown selection
+    String ssid = getFormValue(request, "manualSSID", "");
     if (ssid.length() == 0)
     {
-        int manualSSIDStart = request.indexOf("manualSSID=");
-        if (manualSSIDStart != -1)
-        {
-            manualSSIDStart += 11; // Move past "manualSSID="
-            int manualSSIDEnd = request.indexOf("&", manualSSIDStart);
-            if (manualSSIDEnd == -1)
-            {
-                ssid = request.substring(manualSSIDStart);
-            }
-            else
-            {
-                ssid = request.substring(manualSSIDStart, manualSSIDEnd);
-            }
-            ssid.replace("+", " "); // Replace '+' with spaces
-            ssid = urlDecode(ssid);
-        }
+        ssid = getFormValue(request, "ssid", "");
     }
-
-    // **Step 3: Parse the 'password' parameter**
-    int passStart = request.indexOf("password=");
-    if (passStart != -1)
-    {
-        passStart += 9; // Move past "password="
-        password = request.substring(passStart);
-        password.replace("+", " ");
-        password = urlDecode(password);
-    }
+    String password = getFormValue(request, "password", "");
 
     Serial.print("Extracted SSID: ");
     Serial.println(ssid);
-    Serial.print("Extracted Password: ");
-    Serial.println(password);
 
-    // **Step 4: Validate and Save**
-    if (ssid.length() > 0 && password.length() > 0)
+    // **Validate and Save** (802.11 limits: SSID 1-32 bytes, WPA passphrase 8-63 bytes)
+    if (ssid.length() > 0 && ssid.length() <= 32 && password.length() > 0 && password.length() <= 63 &&
+        saveWiFiCredentials(ssid, password))
     {
-        saveWiFiCredentials(ssid, password);
 
         sendHTTPHeader(client);
         sendHTMLHeader(client, "Setup Complete");
@@ -805,6 +763,7 @@ void NetworkConnections::processWiFiConfig(WiFiClient &client, String request)
 
         sendPageFooter(client);
 
+        client.flush(); // Ensure the response is sent before restarting
         delay(3000);
         ESP.restart();
     }
@@ -827,7 +786,7 @@ void NetworkConnections::processWiFiConfig(WiFiClient &client, String request)
 
         client.println("<div class='error-icon'>Error</div>");
         client.println("<h2>Error: Invalid Wi-Fi Credentials</h2>");
-        client.println("<p>Both SSID and Password are required to connect to a network.</p>");
+        client.println("<p>SSID must be 1-32 characters and the password 1-63 characters, and the credentials must be saved successfully.</p>");
         client.println("<button onclick='goBack()'>Try Again</button>");
 
         sendPageFooter(client);
@@ -837,16 +796,23 @@ void NetworkConnections::processWiFiConfig(WiFiClient &client, String request)
 //------------------------------------------------------------------------------
 // Storage Functions
 //------------------------------------------------------------------------------
-void NetworkConnections::saveWiFiCredentials(String ssid, String password)
+bool NetworkConnections::saveWiFiCredentials(String ssid, String password)
 {
-
-    // Save to NVS
     Serial.println("Saving Wi-Fi credentials to NVS...");
-    preferences.begin("wifi", false); // Read-write mode
-    preferences.putString("ssid", ssid);
-    preferences.putString("password", password);
+    if (!preferences.begin("wifi", false)) // Read-write mode
+    {
+        Serial.println("Failed to open NVS namespace 'wifi'.");
+        return false;
+    }
+    size_t ssidWritten = preferences.putString("ssid", ssid);
+    size_t passWritten = preferences.putString("password", password);
     preferences.end();
-    Serial.println("Wi-Fi credentials successfully saved to NVS.");
+
+    // Read back to confirm the values persisted
+    WiFiCredentials saved = loadWiFiCredentials();
+    bool ok = ssidWritten > 0 && passWritten > 0 && saved.ssid == ssid && saved.password == password;
+    Serial.println(ok ? "Wi-Fi credentials successfully saved to NVS." : "Wi-Fi credentials failed verification after save!");
+    return ok;
 }
 
 void NetworkConnections::saveDeviceSettings(const DeviceSettings &settings)
@@ -1118,15 +1084,12 @@ String NetworkConnections::urlDecode(String input)
 
     for (unsigned int i = 0; i < len; i++)
     {
-        if (input[i] == '%') // Handle URL encoding (e.g., %20 = space)
+        if (input[i] == '%' && i + 2 < len && isxdigit(input[i + 1]) && isxdigit(input[i + 2])) // Handle URL encoding (e.g., %20 = space)
         {
-            if (i + 2 < len)
-            {
-                temp[0] = input[i + 1];
-                temp[1] = input[i + 2];
-                decoded += (char)strtol(temp, NULL, 16);
-                i += 2;
-            }
+            temp[0] = input[i + 1];
+            temp[1] = input[i + 2];
+            decoded += (char)strtol(temp, NULL, 16);
+            i += 2;
         }
         else if (input[i] == '+') // Replace '+' with space
         {

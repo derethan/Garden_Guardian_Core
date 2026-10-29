@@ -268,8 +268,19 @@ void MqttConnection::handleConfigurationTopic(String &payload)
         String ssid = wifiSettings["ssid"].as<String>();
         String password = wifiSettings["password"].as<String>();
 
+        // Validate before overwriting stored credentials
+        if (ssid.length() == 0 || ssid.length() > 32 || password.length() == 0 || password.length() > 63)
+        {
+            debug("Invalid WiFi settings: SSID/password length out of range", true);
+            return;
+        }
+
         // Save Wifi Credentials
-        netConn.saveWiFiCredentials(ssid, password); // Call the method
+        if (!netConn.saveWiFiCredentials(ssid, password))
+        {
+            debug("Failed to save WiFi settings to NVS", true);
+            return;
+        }
 
         // Send acknowledgment
         String ackMessage = "{\"device_id\":\"" + deviceID +
