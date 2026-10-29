@@ -15,6 +15,7 @@ public:
     void setRelayForTimedIntervals(int onInterval, int offInterval);
     void setRelayforTemp(float temperature, float targetTemperature);
     void setRelayForSchedule(int onHour, int offHour, String currentTime);
+    void resetTimer() { previousMillis = 0; }
     
     // Auto-feeding system for nutrient control
     void setAutoFeedingSystem(float tdsValue, float targetTDS, unsigned long stabilizationDelay = 300000);

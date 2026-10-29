@@ -934,6 +934,7 @@ namespace SerialCLI
         settings.idCode = state.idCode;
         settings.httpPublishEnabled = state.httpPublishEnabled;
         settings.httpPublishInterval = state.httpPublishInterval;
+        settings.sleepEnabled = state.sleepEnabled;
         settings.valid = true;
         // NTP settings are preserved from loaded settings
 

@@ -1,3 +1,5 @@
+//IMPORTANT NOTICE: The following code is @DEPRECIATED.
+
 #include "dataProvider.h"
 
 // Constructor
